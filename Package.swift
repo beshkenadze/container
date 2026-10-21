@@ -55,7 +55,7 @@ let package = Package(
         .library(name: "ContainerK8s", targets: ["ContainerK8s"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/beshkenadze/containerization.git", revision: "75951ae12c4f7410cc0b807986732974ab18f446"),
+        .package(url: "https://github.com/beshkenadze/containerization.git", revision: "4782706ee7db5fb411d9f19429158cfd03fe6289"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
