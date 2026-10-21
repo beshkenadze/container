@@ -1,0 +1,85 @@
+name: Fork release
+
+on:
+  push:
+    tags:
+      - "*-bshk.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Import the Developer ID
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$password" "$KEYCHAIN"
+          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$KEYCHAIN" >/dev/null
+          existing=()
+          while IFS= read -r entry; do
+            existing+=("${entry//\"/}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${existing[@]}"
+          app="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/ { print $2; exit }')"
+          installer="$(security find-identity -v "$KEYCHAIN" | awk '/Developer ID Installer/ { print $2; exit }')"
+          [[ -n "$app" ]] || { echo "DEVELOPER_ID_P12 has no Developer ID Application identity." >&2; exit 1; }
+          [[ -n "$installer" ]] || { echo "DEVELOPER_ID_P12 has no Developer ID Installer identity." >&2; exit 1; }
+          echo "APP_IDENTITY=$app" >> "$GITHUB_ENV"
+          echo "INSTALLER_IDENTITY=$installer" >> "$GITHUB_ENV"
+
+      - name: Write the notary key
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          chmod 600 "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY_PATH=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+
+      - name: Build and sign the binaries
+        run: |
+          version="${GITHUB_REF_NAME%%-bshk.*}"
+          echo "PKG=container-${GITHUB_REF_NAME}-installer-signed.pkg" >> "$GITHUB_ENV"
+          make container BUILD_CONFIGURATION=release RELEASE_VERSION="$version" \
+            CODESIGN_OPTS="--force --sign $APP_IDENTITY --keychain $KEYCHAIN --timestamp --options runtime"
+
+      - name: Sign and notarize the installer
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          productsign --sign "$INSTALLER_IDENTITY" --keychain "$KEYCHAIN" --timestamp \
+            bin/release/container-installer-unsigned.pkg "$PKG"
+          xcrun notarytool submit "$PKG" --key "$NOTARY_KEY_PATH" \
+            --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+          xcrun stapler staple "$PKG"
+          pkgutil --check-signature "$PKG"
+          spctl --assess --type install --verbose "$PKG"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$PKG" --title "$GITHUB_REF_NAME" --notes-file .github/bshk-release-notes.md
+
+      - name: Remove the keychain
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/notary.p8"
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
