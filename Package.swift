@@ -56,7 +56,7 @@ let package = Package(
         .library(name: "ContainerCluster", targets: ["ContainerCluster"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/beshkenadze/containerization.git", revision: "4782706ee7db5fb411d9f19429158cfd03fe6289"),
+        .package(url: "https://github.com/beshkenadze/containerization.git", revision: "5a37e406b06788329cf8e780b447e24546b01b4e"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
