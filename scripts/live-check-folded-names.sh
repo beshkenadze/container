@@ -67,10 +67,18 @@ folds() { # directory -> prints 1 when it compares names without case, 0 otherwi
     [[ -e "$dir/$(upper ".foldprobe-$RUN")" ]] && echo 1 || echo 0
     rm -f -- "$probe"
 }
-FOLD_VOLUMES=$(folds "$ROOT/volumes")
-FOLD_CONTAINERS=$(folds "$ROOT/containers")
+# A probe runs in a command substitution, where die ends only the subshell: each call checks the
+# status and the value, so a failed probe stops the run.
+fold_check() { [[ "$2" == 0 || "$2" == 1 ]] || die "the case probe of $1 failed"; }
+FOLD_VOLUMES=$(folds "$ROOT/volumes") || die "the case probe of $ROOT/volumes failed"
+fold_check "$ROOT/volumes" "$FOLD_VOLUMES"
+FOLD_CONTAINERS=$(folds "$ROOT/containers") || die "the case probe of $ROOT/containers failed"
+fold_check "$ROOT/containers" "$FOLD_CONTAINERS"
 FOLD_MACHINES=0
-[[ $WITH_MACHINES -eq 1 ]] && FOLD_MACHINES=$(folds "$MACHINE_ROOT")
+if [[ $WITH_MACHINES -eq 1 ]]; then
+    FOLD_MACHINES=$(folds "$MACHINE_ROOT") || die "the case probe of $MACHINE_ROOT failed"
+    fold_check "$MACHINE_ROOT" "$FOLD_MACHINES"
+fi
 echo "data root: $ROOT (case-insensitive: volumes $FOLD_VOLUMES, containers $FOLD_CONTAINERS, machines $FOLD_MACHINES), run: $RUN"
 
 # Every listing, read once. A listing that fails stops the run: an unseen entity could match.
