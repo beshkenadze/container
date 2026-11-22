@@ -437,6 +437,34 @@ public struct Utility {
 
     /// Gets an existing volume or creates it if it doesn't exist.
     /// Shows a warning for named volumes when auto-creating.
+    /// The volume that a create refused as already existing, read with `inspect`. When the
+    /// create failed for another reason, or the exact name cannot be read (the name exists under
+    /// another spelling that the file system treats as the same), the create's own error is
+    /// thrown: it explains the conflict, where the inspect would only say "not found".
+    static func existingVolume(
+        after createError: Error,
+        inspect: () async throws -> VolumeConfiguration
+    ) async throws -> VolumeConfiguration {
+        let alreadyExists: Bool
+        switch createError {
+        case let error as VolumeError:
+            if case .volumeAlreadyExists = error { alreadyExists = true } else { alreadyExists = false }
+        case let error as ContainerizationError:
+            // An XPC-wrapped volumeAlreadyExists, or the runtime's `.exists` for a folded name.
+            alreadyExists = error.message.contains("already exists")
+        default:
+            alreadyExists = false
+        }
+        guard alreadyExists else {
+            throw createError
+        }
+        do {
+            return try await inspect()
+        } catch {
+            throw createError
+        }
+    }
+
     private static func getOrCreateVolume(parsed: ParsedVolume, log: Logger) async throws -> VolumeConfiguration {
         let labels = parsed.isAnonymous ? [VolumeConfiguration.anonymousLabel: ""] : [:]
 
@@ -450,18 +478,8 @@ public struct Utility {
                 labels: labels
             )
             wasCreated = true
-        } catch let error as VolumeError {
-            guard case .volumeAlreadyExists = error else {
-                throw error
-            }
-            // Volume already exists, just inspect it
-            volume = try await ClientVolume.inspect(parsed.name)
-        } catch let error as ContainerizationError {
-            // Handle XPC-wrapped volumeAlreadyExists error
-            guard error.message.contains("already exists") else {
-                throw error
-            }
-            volume = try await ClientVolume.inspect(parsed.name)
+        } catch {
+            volume = try await existingVolume(after: error) { try await ClientVolume.inspect(parsed.name) }
         }
 
         if wasCreated && !parsed.isAnonymous {

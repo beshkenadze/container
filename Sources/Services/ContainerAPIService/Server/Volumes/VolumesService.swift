@@ -276,7 +276,11 @@ public actor VolumesService {
             return try ReservedDirectory.reserve(path)
         } catch is ReservedDirectory.Exists {
             if let owner = existing.first(where: { ReservedDirectory.sameEntry(FilePath(volumePath(for: $0.name)), path) }) {
-                throw VolumeError.volumeAlreadyExists(owner.name)
+                // `.exists`, as the entity store answered before this check existed, and a
+                // ContainerizationError keeps its code across XPC (a VolumeError does not).
+                throw ContainerizationError(
+                    .exists,
+                    message: "volume '\(name)' already exists as '\(owner.name)': on this file system the two names are the same")
             }
             if ReservedDirectory.reclaimIfAbandoned(path) {
                 log.info("reclaimed an abandoned volume directory", metadata: ["path": "\(path.string)"])

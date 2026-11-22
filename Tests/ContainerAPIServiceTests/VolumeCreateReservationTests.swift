@@ -19,6 +19,7 @@ import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
 import ContainerTestSupport
+import ContainerizationError
 import Foundation
 import Logging
 import SystemPackage
@@ -100,17 +101,14 @@ struct VolumeCreateReservationTests {
             let entityBefore = try state(of: entity)
 
             if try isCaseInsensitive(appRoot) {
-                let error = await #expect(throws: VolumeError.self) {
+                let error = await #expect(throws: ContainerizationError.self) {
                     _ = try await service.create(name: "casevol", driverOpts: small)
                 }
                 #expect(try state(of: image) == imageBefore)
                 #expect(try state(of: entity) == entityBefore)
                 #expect(try await service.list().map(\.name) == ["CaseVol"])
-                if case .volumeAlreadyExists(let existing) = error {
-                    #expect(existing == "CaseVol")
-                } else {
-                    Issue.record("expected volumeAlreadyExists(CaseVol), got \(String(describing: error))")
-                }
+                #expect(error?.code == .exists)
+                #expect(error?.message.contains("already exists as 'CaseVol'") == true)
             } else {
                 _ = try await service.create(name: "casevol", driverOpts: small)
                 #expect(Set(try await service.list().map(\.name)) == ["CaseVol", "casevol"])
