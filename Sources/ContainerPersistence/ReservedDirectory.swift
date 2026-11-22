@@ -157,12 +157,12 @@ public struct ReservedDirectory: Sendable {
         try FileManager.default.removeItem(atPath: path.string)
     }
 
-    /// Whether `a` and `b` name the same file system entry (same device and inode).
-    /// False when either cannot be read.
+    /// Whether `a` and `b` lead to the same file system entry (same device and inode), following
+    /// symbolic links. False when either cannot be read.
     public static func sameEntry(_ a: FilePath, _ b: FilePath) -> Bool {
         var sa = stat()
         var sb = stat()
-        guard lstat(a.string, &sa) == 0, lstat(b.string, &sb) == 0 else {
+        guard stat(a.string, &sa) == 0, stat(b.string, &sb) == 0 else {
             return false
         }
         return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino

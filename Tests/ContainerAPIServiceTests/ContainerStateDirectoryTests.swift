@@ -396,4 +396,17 @@ struct ContainerStateDirectoryTests {
             #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/same/runtime-configuration.json").string))
         }
     }
+
+    @Test("a healthy container reached through a symbolic link named after it is not quarantined")
+    func bundleBehindASymlinkIsHealthy() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            _ = try writeContainer(appRoot: appRoot, directory: "stored", runtimeID: "Web", bundleID: "Web")
+            try FileManager.default.createSymbolicLink(
+                atPath: appRoot.appending("containers/Web").string, withDestinationPath: appRoot.appending("containers/stored").string)
+            let service = try makeService(appRoot: appRoot)
+
+            #expect(try await service.list().map(\.id) == ["Web"])
+            try await service.delete(id: "Web", force: true)
+        }
+    }
 }

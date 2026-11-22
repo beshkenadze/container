@@ -181,4 +181,18 @@ struct MachineStateDirectoryTests {
             #expect(!FileManager.default.fileExists(atPath: left.string))
         }
     }
+
+    @Test("a healthy machine reached through a symbolic link named after it is not quarantined")
+    func bundleBehindASymlinkIsHealthy() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let resources = try resourceRoot(appRoot)
+            _ = try writeMachine(appRoot: appRoot, directory: "mstored", id: "MWEB")
+            try FileManager.default.createSymbolicLink(
+                atPath: appRoot.appending("machines/MWEB").string, withDestinationPath: appRoot.appending("machines/mstored").string)
+            let service = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
+
+            #expect(try await service.list().map(\.id) == ["MWEB"])
+            try await service.delete(id: "MWEB")
+        }
+    }
 }
