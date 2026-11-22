@@ -31,11 +31,12 @@ import SystemPackage
 ///
 /// A reservation is marked: `reserve` writes the file `.reserved`, holding a token of its own,
 /// before anything else, and `publish` removes it when the create has written its entity. A
-/// directory that holds nothing, or only the marker, was left by a create that stopped before it
-/// wrote anything (a crash, or an older version that made the directory before it checked its
-/// options). Such a directory is abandoned and may be reclaimed. A directory with anything else
-/// in it is never removed here. A rollback and a publish act only on a marker with their own
-/// token, so a create never removes a directory that another reservation took over.
+/// directory that holds nothing, or only a marker in that format, was left by a create that
+/// stopped before it wrote anything (a crash, or an older version that made the directory before
+/// it checked its options). Such a directory is abandoned and may be reclaimed. A directory with
+/// anything else in it, including a `.reserved` that this code did not write, is never removed
+/// here. A rollback and a publish act only on a marker with their own token, so a create never
+/// removes a directory that another reservation took over.
 public struct ReservedDirectory: Sendable {
     public let path: FilePath
     /// The content of this reservation's marker.
@@ -119,7 +120,10 @@ public struct ReservedDirectory: Sendable {
         else {
             return false
         }
-        return entries.allSatisfy { $0 == markerName }
+        if entries.isEmpty {
+            return true
+        }
+        return entries == [markerName] && markerToken(in: path) != nil
     }
 
     /// Removes `path` when it is abandoned; returns whether it did.

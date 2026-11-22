@@ -174,7 +174,7 @@ struct MachineStateDirectoryTests {
             let resources = try resourceRoot(appRoot)
             let left = appRoot.appending("machines").appending("mleft")
             try FileManager.default.createDirectory(atPath: left.string, withIntermediateDirectories: true)
-            FileManager.default.createFile(atPath: left.appending(ReservedDirectory.markerName).string, contents: nil)
+            try Data("container-reservation v1 \(UUID().uuidString)".utf8).write(to: URL(fileURLWithPath: left.appending(ReservedDirectory.markerName).string))
 
             _ = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
 

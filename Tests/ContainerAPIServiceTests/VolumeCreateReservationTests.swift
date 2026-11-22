@@ -160,7 +160,7 @@ struct VolumeCreateReservationTests {
                 let directory = appRoot.appending("volumes").appending(name)
                 try FileManager.default.createDirectory(atPath: directory.string, withIntermediateDirectories: true)
                 if marked {
-                    FileManager.default.createFile(atPath: directory.appending(ReservedDirectory.markerName).string, contents: nil)
+                    try Data("container-reservation v1 \(UUID().uuidString)".utf8).write(to: URL(fileURLWithPath: directory.appending(ReservedDirectory.markerName).string))
                 }
                 let volume = try await service.create(name: name, driverOpts: small)
                 #expect(FileManager.default.fileExists(atPath: volume.source))
