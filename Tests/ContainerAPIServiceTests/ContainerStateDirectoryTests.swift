@@ -198,19 +198,17 @@ struct ContainerStateDirectoryTests {
         }
     }
 
-    @Test("a directory whose bundle and runtime configuration name two containers is kept, and its delete is refused")
-    func sharedDirectoryIsKept() async throws {
+    @Test("the state that 1.7.1-bshk.1 leaves (Web started, then web created) loads Web usable and does not load web")
+    func tagMixedStateLoadsTheBundleOwner() async throws {
         try await TemporaryStorage.withTempDir { appRoot in
-            let directory = try writeContainer(appRoot: appRoot, directory: "cmix", runtimeID: "CMIX", bundleID: "cmix")
-            let before = try contents(of: directory)
+            // Web's bundle names Web; the create of web overwrote only runtime-configuration.json.
+            let directory = try writeContainer(appRoot: appRoot, directory: "Web", runtimeID: "web", bundleID: "Web")
             let service = try makeService(appRoot: appRoot)
 
-            #expect(try await service.list().map(\.id) == ["cmix"])
-            let error = await #expect(throws: ContainerizationError.self) {
-                try await service.delete(id: "cmix", force: true)
-            }
-            #expect(error?.code == .invalidState)
-            #expect(try contents(of: directory) == before)
+            #expect(try await service.list().map(\.id) == ["Web"])
+            // Start, stop and delete pass the shared-directory check; delete removes the directory.
+            try await service.delete(id: "Web", force: true)
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
         }
     }
 

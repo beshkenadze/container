@@ -158,6 +158,11 @@ public actor ContainersService {
                     )
                     continue
                 }
+                if let ignored = Self.ignoredRuntimeID(at: dir, config: config) {
+                    log.warning(
+                        "the container directory also holds the runtime configuration of another container, written by a create under a folded name; that container is not loaded (it has no data of its own)",
+                        metadata: ["path": "\(dir.path)", "id": "\(config.id)", "ignored": "\(ignored)"])
+                }
                 if options?.autoRemove ?? false {
                     log.info(
                         "reap auto-remove container",
@@ -1313,31 +1318,39 @@ public actor ContainersService {
         id == processID
     }
 
-    /// Get container configuration, either from existing bundle or from RuntimeConfiguration
     /// Why the directory `dir` cannot be trusted to hold only the container `config`, or nil.
     ///
     /// Before container creates reserved their directory, a create under a name that the file
-    /// system folds onto an existing directory (`Web` beside `web` on a case-insensitive volume)
-    /// wrote its runtime configuration into the existing container's directory. Damage shows in
-    /// two ways: the bundle configuration and the runtime configuration name different
-    /// containers, or the path built from the container's ID does not lead to this directory (as
-    /// the file system resolves it). A directory whose name differs from the ID only in a way
-    /// that the file system ignores, after a rename, is healthy.
+    /// system folds onto an existing directory (`web` beside `Web` on a case-insensitive volume)
+    /// wrote its runtime configuration into the existing container's directory. When `Web` had
+    /// already started, its bundle holds its own configuration, and a start reads only the bundle
+    /// (the runtime reads `runtime-configuration.json` only to make a missing bundle), so `Web`
+    /// stays usable: `config` comes from the bundle, and the other ID is not loaded (see
+    /// `ignoredRuntimeID`). The directory cannot be trusted when the path built from the
+    /// container's ID does not lead to it, as the file system resolves it. A directory whose name
+    /// differs from the ID only in a way that the file system ignores, after a rename, is healthy.
     static func sharedDirectoryReason(at dir: URL, config: ContainerConfiguration, root: URL) -> String? {
-        let bundleID = (try? ContainerResource.Bundle(path: dir).configuration)?.id
-        let runtimeID = (try? RuntimeConfiguration.readRuntimeConfiguration(from: dir))?.containerConfiguration?.id
-        let advice =
-            "start and delete of '\(config.id)' are refused so that no data is lost: copy out what you need, then remove the directory by hand and restart the container system"
-        if let bundleID, let runtimeID, bundleID != runtimeID {
-            return "the directory \(dir.path) holds the bundle of the container '\(bundleID)' and the runtime configuration of the container '\(runtimeID)'; \(advice)"
-        }
         let own = root.appendingPathComponent(config.id)
         guard ReservedDirectory.sameEntry(FilePath(own.path), FilePath(dir.path)) else {
-            return "the directory \(dir.path) holds the container '\(config.id)', but \(own.path) is not that directory; \(advice)"
+            return
+                "the directory \(dir.path) holds the container '\(config.id)', but \(own.path) is not that directory; start and delete of '\(config.id)' are refused so that no data is lost: copy out what you need, then remove the directory by hand and restart the container system"
         }
         return nil
     }
 
+    /// The ID in the directory's runtime configuration when it is not `config`'s: a create under
+    /// a folded name (on 1.7.1-bshk.1) overwrote that file and wrote nothing else, so that
+    /// container never had data of its own.
+    static func ignoredRuntimeID(at dir: URL, config: ContainerConfiguration) -> String? {
+        guard let runtimeID = (try? RuntimeConfiguration.readRuntimeConfiguration(from: dir))?.containerConfiguration?.id,
+            runtimeID != config.id
+        else {
+            return nil
+        }
+        return runtimeID
+    }
+
+    /// Get container configuration, either from existing bundle or from RuntimeConfiguration
     private static func getContainerConfiguration(at path: URL) throws -> (ContainerConfiguration, ContainerCreateOptions?) {
         let bundle = ContainerResource.Bundle(path: path)
         do {
