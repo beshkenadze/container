@@ -4,22 +4,25 @@
 #
 #   C=<container CLI> scripts/live-check-folded-names.sh [--machines]
 #
-# Every object carries a random suffix; the script refuses to start if either spelling already
-# exists, and its cleanup removes only the objects that it created. --machines also checks
-# container machines (it boots an alpine machine, about a minute).
+# Every object carries a random suffix. Before it makes anything, the script refuses to run when
+# any entity of any kind matches one of its names in either spelling: in the directories under
+# the daemon's own app root (as the file system compares names) and in every listing. Its cleanup
+# removes only the objects that it created. --machines also checks container machines (it boots
+# an alpine machine, about a minute).
 #
 # Output per entity: PASS (refused, the first entity is intact), FAIL (the first entity was
 # changed or removed), N/A (the data root is case-sensitive, so the names are distinct).
-# Exit status: 0 when nothing failed, 1 when a check failed, 2 when the script could not run.
+# Exit status: 0 when every check passed, 1 when a check failed, 2 when the script could not run,
+# 3 when nothing failed but a check was N/A.
 
 set -u
 C="${C:-container}"
 WITH_MACHINES=0
 [[ "${1:-}" == "--machines" ]] && WITH_MACHINES=1
 
-ROOT="${CONTAINER_APP_ROOT:-$HOME/Library/Application Support/com.apple.container}"
 RUN="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6)"
 FAILED=0
+SKIPPED=0
 MADE_VOLUMES=()
 MADE_CONTAINERS=()
 MADE_MACHINES=()
@@ -43,38 +46,52 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$C" system status >/dev/null 2>&1 || die "the container system does not answer ($C system status)"
-[[ -d "$ROOT" ]] || die "no data root at $ROOT"
+# The data root of the daemon that the CLI talks to, not one chosen by this shell.
+status="$("$C" system status 2>/dev/null)" || die "the container system does not answer ($C system status)"
+ROOT="$(printf '%s\n' "$status" | awk '$1 == "paths.appRoot" { sub(/^[^ ]+ +/, ""); print }')"
+ROOT="${ROOT%/}"
+[[ -n "$ROOT" && -d "$ROOT" ]] || die "the daemon reports no usable app root ($ROOT)"
+MACHINE_ROOT="$ROOT/plugin-state/machine-apiserver/machines"
 
-# Case behaviour of the data root decides what the checks expect.
+# Case behaviour of the data root decides what the checks expect. The probe never replaces an
+# existing file: noclobber makes the redirection fail instead.
 probe="$ROOT/.foldprobe-$RUN"
-: >"$probe" || die "cannot write $probe"
+(set -o noclobber; : >"$probe") 2>/dev/null || die "cannot create the probe $probe (it exists, or the root is not writable)"
 CASE_INSENSITIVE=0
 [[ -e "$ROOT/$(upper ".foldprobe-$RUN")" ]] && CASE_INSENSITIVE=1
 rm -f -- "$probe"
 echo "data root: $ROOT (case-insensitive: $CASE_INSENSITIVE), run: $RUN"
 
-absent() { # kind name...
-    local kind="$1" name
-    shift
+# Every listing, read once. A listing that fails stops the run: an unseen entity could match.
+LISTINGS="$("$C" list --all --format json)" || die "container list failed"
+LISTINGS+="$("$C" volume list --format json)" || die "container volume list failed"
+LISTINGS+="$("$C" network list --format json)" || die "container network list failed"
+LISTINGS+="$("$C" machine list 2>&1)" || die "container machine list failed"
+
+# Refuses to run when any entity of any kind matches one of the names in either spelling.
+absent() { # name...
+    local name spelling
     for name in "$@"; do
-        case "$kind" in
-            volume) "$C" volume list --quiet 2>/dev/null | grep -qix "$name" && die "volume $name exists" ;;
-            container) "$C" list --all --quiet 2>/dev/null | grep -qix "$name" && die "container $name exists" ;;
-            machine) "$C" machine list 2>/dev/null | awk 'NR>1{print $1}' | grep -qix "$name" && die "machine $name exists" ;;
-        esac
+        for spelling in "$(lower "$name")" "$(upper "$name")"; do
+            [[ -e "$ROOT/containers/$spelling" || -e "$ROOT/volumes/$spelling" || -e "$MACHINE_ROOT/$spelling" ]] &&
+                die "an entity named $spelling exists under $ROOT"
+        done
+        printf '%s' "$LISTINGS" | grep -qi -- "$name" && die "an entity listed by the runtime matches $name"
     done
+    return 0
 }
 
 result() { # entity verdict detail
     echo "$1: $2 - $3"
     [[ "$2" == FAIL ]] && FAILED=1
+    [[ "$2" == N/A ]] && SKIPPED=1
+    return 0
 }
 
 check_volumes() {
     local first="vfold$RUN" second
     second="$(upper "$first")"
-    absent volume "$first" "$second"
+    absent "$first"
     "$C" volume create --opt size=64M "$first" >/dev/null || die "volume create $first failed"
     MADE_VOLUMES+=("$first")
     "$C" run --rm -v "$first:/data" busybox:1.37-musl sh -c 'echo precious > /data/p && sync' >/dev/null 2>&1 ||
@@ -99,7 +116,7 @@ check_volumes() {
 check_containers() {
     local first="cfold$RUN" second
     second="$(upper "$first")"
-    absent container "$first" "$second"
+    absent "$first"
     "$C" run --name "$first" busybox:1.37-musl sh -c 'echo precious > /p && sync' >/dev/null 2>&1 ||
         die "container run $first failed"
     MADE_CONTAINERS+=("$first")
@@ -126,11 +143,11 @@ check_containers() {
 check_machines() {
     local first="mfold$RUN" second
     second="$(upper "$first")"
-    absent machine "$first" "$second"
+    absent "$first"
     "$C" machine create alpine:3.22 --name "$first" >/dev/null 2>&1 || die "machine create $first failed"
     MADE_MACHINES+=("$first")
     "$C" machine stop "$first" >/dev/null 2>&1
-    local bundle="$ROOT/plugin-state/machine-apiserver/machines/$first/config.json"
+    local bundle="$MACHINE_ROOT/$first/config.json"
     [[ -f "$bundle" ]] || die "no bundle configuration at $bundle"
     local before after out rc
     before="$(shasum "$bundle" | cut -d' ' -f1)"
@@ -152,4 +169,6 @@ check_machines() {
 check_volumes
 check_containers
 [[ $WITH_MACHINES -eq 1 ]] && check_machines
-exit $FAILED
+[[ $FAILED -eq 1 ]] && exit 1
+[[ $SKIPPED -eq 1 ]] && exit 3
+exit 0
