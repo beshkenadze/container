@@ -433,4 +433,38 @@ struct ContainerStateDirectoryTests {
             #expect(try await service.list().isEmpty)
         }
     }
+
+    @Test("a replacement created from a copied configuration, creationDate included, is still told apart")
+    func staleDeleteKeepsACopiedReplacement() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            _ = try writeContainer(appRoot: appRoot, directory: "w2", runtimeID: "w2", bundleID: "w2")
+            let service = try makeService(appRoot: appRoot)
+            // The replacement's configuration is the original's, creationDate included.
+            let copied = try #require(try await service.list().first?.configuration)
+            let options = ContainerCreateOptions(
+                autoRemove: false,
+                rootFsOverride: .block(format: "ext4", source: appRoot.appending("rootfs-override.ext4").string, destination: "/", options: []))
+
+            let (gate, open) = AsyncStream<Void>.makeStream()
+            let holder = Task { try await service.withContainerList(logMetadata: [:]) { _ in for await _ in gate { break } } }
+            let pause = Duration.milliseconds(200)
+            try await Task.sleep(for: pause)
+            let first = Task { try await service.delete(id: "w2", force: false) }
+            try await Task.sleep(for: pause)
+            let create = Task { try await service.create(configuration: copied, kernel: kernel, options: options, initImage: nil) }
+            try await Task.sleep(for: pause)
+            let second = Task { try await service.delete(id: "w2", force: false) }
+            try await Task.sleep(for: pause)
+            open.yield()
+            open.finish()
+            try await holder.value
+
+            try await first.value
+            try await create.value
+            let error = await #expect(throws: ContainerizationError.self) { try await second.value }
+            #expect(error?.code == .notFound)
+            #expect(try await service.list().map(\.id) == ["w2"])
+            #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/w2").string))
+        }
+    }
 }

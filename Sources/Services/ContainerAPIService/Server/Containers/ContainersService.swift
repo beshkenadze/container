@@ -58,6 +58,10 @@ public actor ContainersService {
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
+        /// Minted by this service for each container it creates or loads, and kept for that
+        /// container's life in this server. A caller cannot set it, so it tells a container apart
+        /// from another created later under the same name, even from a copied configuration.
+        let generation = UUID()
         /// Set when the container's directory also holds the state of a container under another
         /// name (see `sharedDirectoryReason`). Start and delete are then refused.
         var sharedDirectory: String? = nil
@@ -964,8 +968,8 @@ public actor ContainersService {
         let state = try self._getContainerState(id: id)
         try state.refuseIfSharedDirectory()
         // This state is read before the lock: the container can be deleted and created again
-        // under the same name while this delete waits. Its creation tells them apart.
-        let creationDate = state.snapshot.configuration.creationDate
+        // under the same name while this delete waits. Its generation tells them apart.
+        let generation = state.generation
         switch state.snapshot.status {
         case .running:
             if !force {
@@ -990,7 +994,7 @@ public actor ContainersService {
                 )
                 // Gone already (another delete, or its exit handler for an auto-remove container):
                 // the delete is done, as before.
-                guard try await self.stillSameContainer(id: id, creationDate: creationDate) else {
+                guard try await self.stillSameContainer(id: id, generation: generation) else {
                     return
                 }
                 try await self.cleanUp(id: id, context: context)
@@ -1011,7 +1015,7 @@ public actor ContainersService {
             try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 // Gone already (another delete, or its exit handler for an auto-remove container):
                 // the delete is done, as before.
-                guard try await self.stillSameContainer(id: id, creationDate: creationDate) else {
+                guard try await self.stillSameContainer(id: id, generation: generation) else {
                     return
                 }
                 try await self.cleanUp(id: id, context: context)
@@ -1021,11 +1025,11 @@ public actor ContainersService {
 
     /// Whether the container that the caller read is still there under `id`: false when it is
     /// gone, and it throws when another container now has the name.
-    private func stillSameContainer(id: String, creationDate: Date) throws -> Bool {
+    private func stillSameContainer(id: String, generation: UUID) throws -> Bool {
         guard let current = self.containers[id] else {
             return false
         }
-        guard current.snapshot.configuration.creationDate == creationDate else {
+        guard current.generation == generation else {
             throw ContainerizationError(
                 .notFound,
                 message: "container \(id) was replaced while this delete waited; nothing was removed")
