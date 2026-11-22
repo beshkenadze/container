@@ -35,6 +35,15 @@ public actor ContainersService {
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
+        /// Set when the container's directory also holds the state of a container under another
+        /// name (see `sharedDirectoryReason`). Start and delete are then refused.
+        var sharedDirectory: String? = nil
+
+        func refuseIfSharedDirectory() throws {
+            if let sharedDirectory {
+                throw ContainerizationError(.invalidState, message: sharedDirectory)
+            }
+        }
 
         func getClient() throws -> RuntimeClient {
             guard let client else {
@@ -103,6 +112,16 @@ public actor ContainersService {
         for dir in directories {
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
+                if let reason = Self.sharedDirectoryReason(at: dir, config: config) {
+                    // Keep the directory exactly as it is: it may hold the only copy of a
+                    // container's data, under a configuration that names another container.
+                    log.error("container directory holds two containers", metadata: ["path": "\(dir.path)", "reason": "\(reason)"])
+                    results[config.id] = ContainerState(
+                        snapshot: .init(configuration: config, status: .stopped, networks: [], startedDate: nil),
+                        sharedDirectory: reason
+                    )
+                    continue
+                }
                 if options?.autoRemove ?? false {
                     log.info(
                         "reap auto-remove container",
@@ -308,6 +327,9 @@ public actor ContainersService {
             let path = self.containerRoot.appendingPathComponent(configuration.id)
             let systemPlatform = kernel.platform
 
+            // From here on the create writes only inside the directory that it reserves.
+            let directory = try await self.reserveContainerDirectory(id: configuration.id)
+
             // Fetch init image (custom or default)
             self.log.debug(
                 "ContainersService: get init block",
@@ -315,9 +337,9 @@ public actor ContainersService {
                     "id": "\(configuration.id)"
                 ]
             )
-            let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
-
             do {
+                let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
+
                 self.log.debug(
                     "create snapshot",
                     metadata: [
@@ -354,8 +376,37 @@ public actor ContainersService {
                 )
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
             } catch {
+                do {
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error(
+                        "failed to remove the directory of a container whose create failed",
+                        metadata: ["id": "\(configuration.id)", "error": "\(cleanupError)"])
+                }
                 throw error
             }
+        }
+    }
+
+    /// Reserves the directory of a new container. The file system decides whether `id` equals the
+    /// name of an existing directory: on a case-insensitive volume `Web` and `web` are one
+    /// directory, which holds the other container's configuration and root file system.
+    private func reserveContainerDirectory(id: String) async throws -> ReservedDirectory {
+        let path = FilePath(self.containerRoot.appendingPathComponent(id).path)
+        do {
+            return try ReservedDirectory.reserve(path)
+        } catch is ReservedDirectory.Exists {
+            let owner = self.containers.keys.first {
+                ReservedDirectory.sameEntry(FilePath(self.containerRoot.appendingPathComponent($0).path), path)
+            }
+            if let owner {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container '\(id)' cannot be created: on this file system its name is the same as that of the existing container '\(owner)'")
+            }
+            throw ContainerizationError(
+                .exists,
+                message: "container '\(id)' cannot be created: \(path.string) already exists and belongs to no container; move it away to create the container")
         }
     }
 
@@ -381,6 +432,7 @@ public actor ContainersService {
 
         try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             var state = try await self.getContainerState(id: id, context: context)
+            try state.refuseIfSharedDirectory()
 
             // We've already bootstrapped this container. Ideally we should be able to
             // return some sort of error code from the sandbox svc to check here, but this
@@ -848,6 +900,7 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try state.refuseIfSharedDirectory()
         switch state.snapshot.status {
         case .running:
             if !force {
@@ -1168,6 +1221,29 @@ public actor ContainersService {
     }
 
     /// Get container configuration, either from existing bundle or from RuntimeConfiguration
+    /// Why the directory `dir` cannot be trusted to hold only the container `config`, or nil.
+    ///
+    /// Before container creates reserved their directory, a create under a name that the file
+    /// system folds onto an existing directory (`Web` beside `web` on a case-insensitive volume)
+    /// wrote its runtime configuration into the existing container's directory. Such a directory
+    /// is recognised by a name, a bundle configuration and a runtime configuration that do not all
+    /// name the same container.
+    static func sharedDirectoryReason(at dir: URL, config: ContainerConfiguration) -> String? {
+        var names = [dir.lastPathComponent, config.id]
+        if let runtimeID = (try? RuntimeConfiguration.readRuntimeConfiguration(from: dir))?.containerConfiguration?.id {
+            names.append(runtimeID)
+        }
+        var seen = Set<String>()
+        let distinct = names.filter { seen.insert($0).inserted }
+        guard distinct.count > 1 else {
+            return nil
+        }
+        return "the directory \(dir.path) holds the state of the containers "
+            + distinct.map { "'\($0)'" }.joined(separator: " and ")
+            + ", whose names this file system treats as the same; start and delete of '\(config.id)' are refused so that"
+            + " no data is lost: copy out what you need, then remove the directory by hand and restart the container system"
+    }
+
     private static func getContainerConfiguration(at path: URL) throws -> (ContainerConfiguration, ContainerCreateOptions?) {
         let bundle = ContainerResource.Bundle(path: path)
         do {
