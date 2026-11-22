@@ -54,4 +54,14 @@ struct ExistingVolumeTests {
             }
         }
     }
+
+    @Test("an inspect that fails for another reason than not-found is reported as it is")
+    func otherInspectErrorsPassThrough() async throws {
+        let conflict = ContainerizationError(.exists, message: "volume 'data' already exists as 'Data': on this file system the two names are the same")
+        let dropped = ContainerizationError(.interrupted, message: "XPC connection interrupted")
+        let error = await #expect(throws: ContainerizationError.self) {
+            _ = try await Utility.existingVolume(after: conflict) { throw dropped }
+        }
+        #expect(error?.code == .interrupted)
+    }
 }

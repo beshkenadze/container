@@ -438,9 +438,10 @@ public struct Utility {
     /// Gets an existing volume or creates it if it doesn't exist.
     /// Shows a warning for named volumes when auto-creating.
     /// The volume that a create refused as already existing, read with `inspect`. When the
-    /// create failed for another reason, or the exact name cannot be read (the name exists under
-    /// another spelling that the file system treats as the same), the create's own error is
-    /// thrown: it explains the conflict, where the inspect would only say "not found".
+    /// create failed for another reason, its error is thrown. When the inspect answers "not
+    /// found" (the name exists under another spelling that the file system treats as the same),
+    /// the create's own error is thrown: it explains the conflict. Any other inspect error is
+    /// thrown as it is.
     static func existingVolume(
         after createError: Error,
         inspect: () async throws -> VolumeConfiguration
@@ -460,8 +461,20 @@ public struct Utility {
         }
         do {
             return try await inspect()
-        } catch {
+        } catch let inspectError where isNotFound(inspectError) {
             throw createError
+        }
+    }
+
+    private static func isNotFound(_ error: Error) -> Bool {
+        switch error {
+        case let error as VolumeError:
+            if case .volumeNotFound = error { return true }
+            return false
+        case let error as ContainerizationError:
+            return error.code == .notFound || error.message.contains("not found")
+        default:
+            return false
         }
     }
 
