@@ -258,4 +258,29 @@ struct ContainerStateDirectoryTests {
             #expect(bootouts.all.count == 1 && bootouts.all[0].hasSuffix(".container-runtime-linux.cok"))
         }
     }
+
+    @Test("a container directory that an interrupted create left empty does not block the name; one with files does")
+    func abandonedDirectoryIsReclaimedAtCreate() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let service = try makeService(appRoot: appRoot)
+            let containers = appRoot.appending("containers")
+            try FileManager.default.createDirectory(atPath: containers.appending("cleft").string, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: containers.appending("cheld").string, withIntermediateDirectories: true)
+            try Data("rootfs".utf8).write(to: URL(fileURLWithPath: containers.appending("cheld").appending("rootfs.ext4").string))
+            let options = ContainerCreateOptions(
+                autoRemove: false,
+                rootFsOverride: .block(format: "ext4", source: appRoot.appending("rootfs-override.ext4").string, destination: "/", options: []))
+
+            try await service.create(configuration: configuration(id: "cleft"), kernel: kernel, options: options, initImage: nil)
+            #expect(try await service.list().map(\.id) == ["cleft"])
+            #expect(!FileManager.default.fileExists(atPath: containers.appending("cleft").appending(ReservedDirectory.markerName).string))
+
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await service.create(configuration: configuration(id: "cheld"), kernel: kernel, options: options, initImage: nil)
+            }
+            #expect(error?.code == .exists)
+            #expect(error?.message.contains(containers.appending("cheld").string) == true)
+            #expect(FileManager.default.fileExists(atPath: containers.appending("cheld").appending("rootfs.ext4").string))
+        }
+    }
 }

@@ -153,4 +153,36 @@ struct VolumeCreateReservationTests {
             }
         }
     }
+
+    @Test("a directory that an interrupted create left empty, or with only its marker, does not block the name")
+    func abandonedDirectoryIsReclaimedAtCreate() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let service = try await makeVolumesService(appRoot: appRoot)
+            for (name, marked) in [("empty", false), ("marked", true)] {
+                let directory = appRoot.appending("volumes").appending(name)
+                try FileManager.default.createDirectory(atPath: directory.string, withIntermediateDirectories: true)
+                if marked {
+                    FileManager.default.createFile(atPath: directory.appending(ReservedDirectory.markerName).string, contents: nil)
+                }
+                let volume = try await service.create(name: name, driverOpts: small)
+                #expect(FileManager.default.fileExists(atPath: volume.source))
+                #expect(!FileManager.default.fileExists(atPath: directory.appending(ReservedDirectory.markerName).string))
+            }
+        }
+    }
+
+    @Test("the load removes an abandoned volume directory and keeps one that holds files")
+    func loadReclaimsOnlyAbandonedDirectories() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let volumes = appRoot.appending("volumes")
+            try FileManager.default.createDirectory(atPath: volumes.appending("gone").string, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: volumes.appending("kept").string, withIntermediateDirectories: true)
+            try Data("image".utf8).write(to: URL(fileURLWithPath: volumes.appending("kept").appending("volume.img").string))
+
+            _ = try await makeVolumesService(appRoot: appRoot)
+
+            #expect(!FileManager.default.fileExists(atPath: volumes.appending("gone").string))
+            #expect(FileManager.default.fileExists(atPath: volumes.appending("kept").appending("volume.img").string))
+        }
+    }
 }

@@ -96,6 +96,12 @@ public actor MachinesService {
                 continue
             }
             let dir = root.appending(component)
+            // A bundle directory that an interrupted create left with nothing in it (or only its
+            // reservation marker) holds no data: remove it, so that its name can be used again.
+            if ReservedDirectory.reclaimIfAbandoned(dir) {
+                log.info("reclaimed an abandoned machine bundle", metadata: ["path": "\(dir.string)"])
+                continue
+            }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir.string, isDirectory: &isDirectory), isDirectory.boolValue else {
                 continue
@@ -260,6 +266,11 @@ public actor MachinesService {
                 if await self.default == nil {
                     try await self._setDefault(id: configuration.id)
                 }
+                do {
+                    try directory.publish()
+                } catch {
+                    self.log.error("failed to remove the reservation marker of container machine \(configuration.id): \(error)")
+                }
             } catch {
                 do {
                     try bundle.delete()
@@ -287,9 +298,15 @@ public actor MachinesService {
                     .exists,
                     message: "container machine '\(id)' cannot be created: on this file system its name is the same as that of the existing machine '\(owner)'")
             }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned machine bundle", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
             throw ContainerizationError(
                 .exists,
-                message: "container machine '\(id)' cannot be created: \(path.string) already exists and belongs to no machine; move it away to create the machine")
+                message:
+                    "container machine '\(id)' cannot be created: \(path.string) already exists and belongs to no machine, and it holds files (an interrupted create can leave one); move it away to create the machine"
+            )
         }
     }
 

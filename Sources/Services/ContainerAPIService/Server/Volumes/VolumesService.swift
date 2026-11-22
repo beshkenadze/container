@@ -48,6 +48,14 @@ public actor VolumesService {
         // Deprecated: As of 1.0.0. Use ``creationDate`` instead of ``createdAt``.
         // Note: Will be removed in a later release.
         let configurations = try await store.list()
+        // A directory that an interrupted create left with nothing in it (or only its reservation
+        // marker) holds no data: remove it, so that its name can be used again.
+        let known = Set(configurations.map(\.name))
+        for entry in (try? FileManager.default.contentsOfDirectory(atPath: resourceRoot.string)) ?? [] where !known.contains(entry) {
+            if let component = FilePath.Component(entry), ReservedDirectory.reclaimIfAbandoned(resourceRoot.appending(component)) {
+                log.info("reclaimed an abandoned volume directory", metadata: ["name": "\(entry)"])
+            }
+        }
         for configuration in configurations {
             do {
                 try await store.update(configuration)
@@ -270,8 +278,13 @@ public actor VolumesService {
             if let owner = existing.first(where: { ReservedDirectory.sameEntry(FilePath(volumePath(for: $0.name)), path) }) {
                 throw VolumeError.volumeAlreadyExists(owner.name)
             }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned volume directory", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
             throw VolumeError.storageError(
-                "cannot create volume '\(name)': \(path.string) already exists and belongs to no volume; move it away to create the volume")
+                "cannot create volume '\(name)': \(path.string) already exists and belongs to no volume, and it holds files (an interrupted create can leave one); move it away to create the volume"
+            )
         } catch {
             throw VolumeError.storageError("cannot create the directory of volume '\(name)': \(error)")
         }
@@ -374,6 +387,11 @@ public actor VolumesService {
             throw error
         }
 
+        do {
+            try directory.publish()
+        } catch {
+            log.error("failed to remove the reservation marker of a new volume", metadata: ["name": "\(name)", "error": "\(error)"])
+        }
         log.info(
             "created volume",
             metadata: [

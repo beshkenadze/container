@@ -28,8 +28,16 @@ import SystemPackage
 /// `reserve` uses `mkdir(2)`, which fails when the file system already has an entry under an
 /// equal name, so the file system decides what "the same name" is. A create writes only inside
 /// a directory that it reserved, and a failed create removes only that directory.
+///
+/// A reservation is marked: `reserve` writes the file `.reserved` before anything else, and
+/// `publish` removes it when the create has written its entity. A directory that holds nothing,
+/// or only that marker, was left by a create that stopped before it wrote anything (a crash, or
+/// an older version that made the directory before it checked its options). Such a directory is
+/// abandoned and may be reclaimed. A directory with anything else in it is never removed here.
 public struct ReservedDirectory: Sendable {
     public let path: FilePath
+
+    public static let markerName = ".reserved"
 
     /// The file system already has an entry under a name equal to the last component of `path`.
     public struct Exists: Error, CustomStringConvertible {
@@ -53,7 +61,42 @@ public struct ReservedDirectory: Sendable {
             }
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
-        return ReservedDirectory(path: path)
+        let directory = ReservedDirectory(path: path)
+        do {
+            try directory.createFile(markerName)
+        } catch {
+            rmdir(path.string)
+            throw error
+        }
+        return directory
+    }
+
+    /// Marks the create as complete: the directory now holds an entity.
+    public func publish() throws {
+        guard unlink(path.appending(Self.markerName).string) == 0 || errno == ENOENT else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Whether `path` is a directory (not a link) that holds nothing, or only the marker.
+    public static func isAbandoned(_ path: FilePath) -> Bool {
+        var info = stat()
+        guard lstat(path.string, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+            let entries = try? FileManager.default.contentsOfDirectory(atPath: path.string)
+        else {
+            return false
+        }
+        return entries.allSatisfy { $0 == markerName }
+    }
+
+    /// Removes `path` when it is abandoned; returns whether it did.
+    @discardableResult
+    public static func reclaimIfAbandoned(_ path: FilePath) -> Bool {
+        guard isAbandoned(path) else {
+            return false
+        }
+        _ = unlink(path.appending(markerName).string)
+        return rmdir(path.string) == 0
     }
 
     /// Creates the empty file `name` inside the reserved directory, failing if it exists.

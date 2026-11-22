@@ -167,4 +167,18 @@ struct MachineStateDirectoryTests {
             #expect(!FileManager.default.fileExists(atPath: directory.path))
         }
     }
+
+    @Test("the load removes an abandoned machine bundle directory")
+    func loadReclaimsAnAbandonedBundle() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let resources = try resourceRoot(appRoot)
+            let left = appRoot.appending("machines").appending("mleft")
+            try FileManager.default.createDirectory(atPath: left.string, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: left.appending(ReservedDirectory.markerName).string, contents: nil)
+
+            _ = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
+
+            #expect(!FileManager.default.fileExists(atPath: left.string))
+        }
+    }
 }

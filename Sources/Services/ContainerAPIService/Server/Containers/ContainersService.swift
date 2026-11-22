@@ -136,6 +136,12 @@ public actor ContainersService {
         let runtimePlugins = loader.findPlugins().filter { $0.hasType(.runtime) }
         var results = [String: ContainerState]()
         for dir in directories {
+            // A directory that an interrupted create left with nothing in it (or only its
+            // reservation marker) holds no data: remove it, so that its name can be used again.
+            if ReservedDirectory.reclaimIfAbandoned(FilePath(dir.path)) {
+                log.info("reclaimed an abandoned container directory", metadata: ["path": "\(dir.path)"])
+                continue
+            }
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
                 if let reason = Self.sharedDirectoryReason(at: dir, config: config, root: root) {
@@ -405,6 +411,13 @@ public actor ContainersService {
                     startedDate: nil
                 )
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
+                do {
+                    try directory.publish()
+                } catch {
+                    self.log.error(
+                        "failed to remove the reservation marker of a new container",
+                        metadata: ["id": "\(configuration.id)", "error": "\(error)"])
+                }
             } catch {
                 do {
                     try directory.release()
@@ -434,9 +447,15 @@ public actor ContainersService {
                     .exists,
                     message: "container '\(id)' cannot be created: on this file system its name is the same as that of the existing container '\(owner)'")
             }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned container directory", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
             throw ContainerizationError(
                 .exists,
-                message: "container '\(id)' cannot be created: \(path.string) already exists and belongs to no container; move it away to create the container")
+                message:
+                    "container '\(id)' cannot be created: \(path.string) already exists and belongs to no container, and it holds files (an interrupted create can leave one); move it away to create the container"
+            )
         }
     }
 
