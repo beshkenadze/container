@@ -465,4 +465,84 @@ struct ContainerStateDirectoryTests {
             #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/w2").string))
         }
     }
+
+    /// The paths that the service removed, in order; a path in `failing` throws instead.
+    private final class Removals: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+        let failing: Set<String>
+        init(failing: Set<String> = []) { self.failing = failing }
+        func remove(_ url: URL) throws {
+            let name = url.lastPathComponent
+            lock.withLock { paths.append(name) }
+            if failing.contains(name) {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+        var all: [String] { lock.withLock { paths } }
+    }
+
+    private func effects(appRoot: FilePath, removals: Removals) -> ContainersService.HostEffects {
+        var effects = hostEffects(appRoot: appRoot, bootouts: Bootouts())
+        effects.removeItem = { try removals.remove($0) }
+        return effects
+    }
+
+    @Test("the delete of the repaired Web removes web's runtime configuration first, then the directory")
+    func repairedDeleteRemovesTheForeignConfigurationFirst() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = try writeContainer(appRoot: appRoot, directory: "Web", runtimeID: "web", bundleID: "Web")
+            let removals = Removals()
+            let service = try makeService(appRoot: appRoot, effects: effects(appRoot: appRoot, removals: removals))
+
+            try await service.delete(id: "Web", force: true)
+            #expect(removals.all == ["runtime-configuration.json", "Web"])
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
+        }
+    }
+
+    @Test("when web's runtime configuration cannot be removed, the delete of Web stops and Web stays whole")
+    func repairedDeleteStopsWhenTheForeignConfigurationStays() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = try writeContainer(appRoot: appRoot, directory: "Web", runtimeID: "web", bundleID: "Web")
+            let before = try contents(of: directory)
+            let removals = Removals(failing: ["runtime-configuration.json"])
+            let service = try makeService(appRoot: appRoot, effects: effects(appRoot: appRoot, removals: removals))
+
+            await #expect(throws: ContainerizationError.self) {
+                try await service.delete(id: "Web", force: true)
+            }
+            #expect(removals.all == ["runtime-configuration.json"])
+            #expect(try contents(of: directory) == before)
+            #expect(try await service.list().map(\.id) == ["Web"])
+        }
+    }
+
+    @Test("a crash after the first removal leaves a directory that the next load gives to no container")
+    func directoryWithoutTheForeignConfigurationIsNotAttributed() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            // The state after the first removal and a partial delete: no runtime configuration,
+            // no bundle configuration, Web's root file system.
+            let directory = try writeContainer(appRoot: appRoot, directory: "Web", runtimeID: "web", bundleID: "Web")
+            try FileManager.default.removeItem(at: directory.appendingPathComponent("runtime-configuration.json"))
+            try FileManager.default.removeItem(at: directory.appendingPathComponent("config.json"))
+            let service = try makeService(appRoot: appRoot)
+
+            #expect(try await service.list().isEmpty)
+            #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("rootfs.ext4").path))
+        }
+    }
+
+    @Test("the delete of an ordinary container removes only its directory")
+    func ordinaryDeleteRemovesTheDirectory() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            _ = try writeContainer(appRoot: appRoot, directory: "plain", runtimeID: "plain", bundleID: "plain")
+            let removals = Removals()
+            let service = try makeService(appRoot: appRoot, effects: effects(appRoot: appRoot, removals: removals))
+
+            try await service.delete(id: "plain", force: true)
+            #expect(removals.all == ["plain"])
+        }
+    }
 }

@@ -39,13 +39,17 @@ public actor ContainersService {
         public var deregister: @Sendable (_ fullServiceLabel: String) throws -> Int32
         /// The init block for a create; nil fetches the configured init image.
         public var initBlock: (@Sendable (_ platform: ContainerizationOCI.Platform, _ imageRef: String?) async throws -> Filesystem)?
+        /// Removes a file or a directory with its contents.
+        public var removeItem: @Sendable (_ url: URL) throws -> Void
 
         public init(
             deregister: @escaping @Sendable (_ fullServiceLabel: String) throws -> Int32,
-            initBlock: (@Sendable (_ platform: ContainerizationOCI.Platform, _ imageRef: String?) async throws -> Filesystem)? = nil
+            initBlock: (@Sendable (_ platform: ContainerizationOCI.Platform, _ imageRef: String?) async throws -> Filesystem)? = nil,
+            removeItem: @escaping @Sendable (_ url: URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
         ) {
             self.deregister = deregister
             self.initBlock = initBlock
+            self.removeItem = removeItem
         }
 
         public static let live = HostEffects(deregister: { label in
@@ -1240,9 +1244,26 @@ public actor ContainersService {
             _ = try? self.hostEffects.deregister(label)
         }
 
+        // A runtime configuration that names another container (a create under a folded name on
+        // 1.7.1-bshk.1 wrote it over this container's) goes first. A crash later in the delete
+        // then leaves a directory whose remaining data no configuration attributes to that other
+        // container: the load keeps it and lists it under no name. When this removal fails, the
+        // delete stops here and the container stays whole.
+        if let loaded = self.containers[id]?.snapshot.configuration, Self.ignoredRuntimeID(at: path, config: loaded) != nil {
+            let foreign = path.appendingPathComponent(RuntimeConfiguration.runtimeConfigurationFilename)
+            do {
+                try self.hostEffects.removeItem(foreign)
+            } catch {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "cannot delete container \(id): the runtime configuration of another container in its directory could not be removed first: \(error)"
+                )
+            }
+        }
+
         // Always try to delete the bundle directory, even if it's incomplete
         do {
-            try bundle.delete()
+            try self.hostEffects.removeItem(path)
         } catch {
             self.log.warning(
                 "failed to delete bundle for container",

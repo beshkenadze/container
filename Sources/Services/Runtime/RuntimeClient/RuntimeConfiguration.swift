@@ -20,7 +20,7 @@ import ContainerizationError
 import Foundation
 
 public struct RuntimeConfiguration: Codable, Sendable {
-    static let runtimeConfigurationFilename = "runtime-configuration.json"
+    public static let runtimeConfigurationFilename = "runtime-configuration.json"
 
     public let path: URL
     // TODO: Remove runtime-specific fields (initialFilesystem, kernel, containerRootFilesystem).
