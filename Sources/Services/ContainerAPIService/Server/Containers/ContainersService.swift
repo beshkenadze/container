@@ -988,7 +988,11 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
-                try await self.requireSameContainer(id: id, creationDate: creationDate)
+                // Gone already (another delete, or its exit handler for an auto-remove container):
+                // the delete is done, as before.
+                guard try await self.stillSameContainer(id: id, creationDate: creationDate) else {
+                    return
+                }
                 try await self.cleanUp(id: id, context: context)
                 self.log.info(
                     "ContainersService: successful cleanup",
@@ -1005,20 +1009,28 @@ public actor ContainersService {
             )
         default:
             try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
-                try await self.requireSameContainer(id: id, creationDate: creationDate)
+                // Gone already (another delete, or its exit handler for an auto-remove container):
+                // the delete is done, as before.
+                guard try await self.stillSameContainer(id: id, creationDate: creationDate) else {
+                    return
+                }
                 try await self.cleanUp(id: id, context: context)
             }
         }
     }
 
-    /// Throws when the container `id` is gone, or is another container created under the same
-    /// name since the caller read its state.
-    private func requireSameContainer(id: String, creationDate: Date) throws {
-        guard let current = self.containers[id], current.snapshot.configuration.creationDate == creationDate else {
+    /// Whether the container that the caller read is still there under `id`: false when it is
+    /// gone, and it throws when another container now has the name.
+    private func stillSameContainer(id: String, creationDate: Date) throws -> Bool {
+        guard let current = self.containers[id] else {
+            return false
+        }
+        guard current.snapshot.configuration.creationDate == creationDate else {
             throw ContainerizationError(
                 .notFound,
-                message: "container \(id) was deleted or replaced while this delete waited; nothing was removed")
+                message: "container \(id) was replaced while this delete waited; nothing was removed")
         }
+        return true
     }
 
     public func containerDiskUsage(id: String) async throws -> UInt64 {

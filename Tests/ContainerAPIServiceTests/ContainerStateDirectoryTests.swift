@@ -409,4 +409,28 @@ struct ContainerStateDirectoryTests {
             try await service.delete(id: "Web", force: true)
         }
     }
+
+    @Test("two deletes of one container that wait together both succeed, as on 1.7.1-bshk.1")
+    func concurrentDeletesBothSucceed() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = try writeContainer(appRoot: appRoot, directory: "twice", runtimeID: "twice", bundleID: "twice")
+            let service = try makeService(appRoot: appRoot)
+
+            let (gate, open) = AsyncStream<Void>.makeStream()
+            let holder = Task { try await service.withContainerList(logMetadata: [:]) { _ in for await _ in gate { break } } }
+            let pause = Duration.milliseconds(200)
+            try await Task.sleep(for: pause)
+            let first = Task { try await service.delete(id: "twice", force: false) }
+            let second = Task { try await service.delete(id: "twice", force: false) }
+            try await Task.sleep(for: pause)
+            open.yield()
+            open.finish()
+            try await holder.value
+
+            try await first.value
+            try await second.value
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
+            #expect(try await service.list().isEmpty)
+        }
+    }
 }
