@@ -123,17 +123,33 @@ struct MachineStateDirectoryTests {
         }
     }
 
-    @Test("a bundle whose configuration names another machine is kept, and its delete is refused")
-    func renamedBundleIsKept() async throws {
+    @Test(
+        "a healthy machine whose bundle name differs only in case loads and deletes",
+        .enabled(if: tempDirIsCaseInsensitive(), "needs a case-insensitive temporary directory")
+    )
+    func caseRenamedBundleIsHealthy() async throws {
         try await TemporaryStorage.withTempDir { appRoot in
             let resources = try resourceRoot(appRoot)
             let directory = try writeMachine(appRoot: appRoot, directory: "mdir", id: "MDIR")
             let service = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
-            let before = try contents(of: directory)
 
             #expect(try await service.list().map(\.id) == ["MDIR"])
+            try await service.delete(id: "MDIR")
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
+        }
+    }
+
+    @Test("a bundle that its machine's ID does not lead to is kept, and its delete is refused")
+    func unreachableBundleIsKept() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let resources = try resourceRoot(appRoot)
+            let directory = try writeMachine(appRoot: appRoot, directory: "mx", id: "my")
+            let service = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
+            let before = try contents(of: directory)
+
+            #expect(try await service.list().map(\.id) == ["my"])
             let error = await #expect(throws: ContainerizationError.self) {
-                try await service.delete(id: "MDIR")
+                try await service.delete(id: "my")
             }
             #expect(error?.code == .invalidState)
             #expect(try contents(of: directory) == before)

@@ -138,7 +138,7 @@ public actor ContainersService {
         for dir in directories {
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
-                if let reason = Self.sharedDirectoryReason(at: dir, config: config) {
+                if let reason = Self.sharedDirectoryReason(at: dir, config: config, root: root) {
                     // Keep the directory exactly as it is: it may hold the only copy of a
                     // container's data, under a configuration that names another container.
                     log.error("container directory holds two containers", metadata: ["path": "\(dir.path)", "reason": "\(reason)"])
@@ -1255,23 +1255,24 @@ public actor ContainersService {
     ///
     /// Before container creates reserved their directory, a create under a name that the file
     /// system folds onto an existing directory (`Web` beside `web` on a case-insensitive volume)
-    /// wrote its runtime configuration into the existing container's directory. Such a directory
-    /// is recognised by a name, a bundle configuration and a runtime configuration that do not all
-    /// name the same container.
-    static func sharedDirectoryReason(at dir: URL, config: ContainerConfiguration) -> String? {
-        var names = [dir.lastPathComponent, config.id]
-        if let runtimeID = (try? RuntimeConfiguration.readRuntimeConfiguration(from: dir))?.containerConfiguration?.id {
-            names.append(runtimeID)
+    /// wrote its runtime configuration into the existing container's directory. Damage shows in
+    /// two ways: the bundle configuration and the runtime configuration name different
+    /// containers, or the path built from the container's ID does not lead to this directory (as
+    /// the file system resolves it). A directory whose name differs from the ID only in a way
+    /// that the file system ignores, after a rename, is healthy.
+    static func sharedDirectoryReason(at dir: URL, config: ContainerConfiguration, root: URL) -> String? {
+        let bundleID = (try? ContainerResource.Bundle(path: dir).configuration)?.id
+        let runtimeID = (try? RuntimeConfiguration.readRuntimeConfiguration(from: dir))?.containerConfiguration?.id
+        let advice =
+            "start and delete of '\(config.id)' are refused so that no data is lost: copy out what you need, then remove the directory by hand and restart the container system"
+        if let bundleID, let runtimeID, bundleID != runtimeID {
+            return "the directory \(dir.path) holds the bundle of the container '\(bundleID)' and the runtime configuration of the container '\(runtimeID)'; \(advice)"
         }
-        var seen = Set<String>()
-        let distinct = names.filter { seen.insert($0).inserted }
-        guard distinct.count > 1 else {
-            return nil
+        let own = root.appendingPathComponent(config.id)
+        guard ReservedDirectory.sameEntry(FilePath(own.path), FilePath(dir.path)) else {
+            return "the directory \(dir.path) holds the container '\(config.id)', but \(own.path) is not that directory; \(advice)"
         }
-        return "the directory \(dir.path) holds the state of the containers "
-            + distinct.map { "'\($0)'" }.joined(separator: " and ")
-            + ", whose names this file system treats as the same; start and delete of '\(config.id)' are refused so that"
-            + " no data is lost: copy out what you need, then remove the directory by hand and restart the container system"
+        return nil
     }
 
     private static func getContainerConfiguration(at path: URL) throws -> (ContainerConfiguration, ContainerCreateOptions?) {

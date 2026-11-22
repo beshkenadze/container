@@ -101,15 +101,19 @@ public actor MachinesService {
                 continue
             }
 
-            // Before machine creates reserved their bundle directory, a create under a name that
-            // the file system folds onto an existing bundle (`Dev` beside `dev` on a
-            // case-insensitive volume) wrote its configuration into the existing bundle. Keep such
-            // a bundle exactly as it is: its root file system belongs to the other machine.
+            // A bundle that the path built from its machine's ID does not lead to (as the file
+            // system resolves it) cannot be operated on safely: keep it exactly as it is. A bundle
+            // whose name differs from the ID only in a way that the file system ignores is healthy.
+            // Note: a bundle that an old create under a folded name rewrote (`Dev` beside `dev`)
+            // resolves, and loads as the machine its configuration names, with its own root file
+            // system.
             let existing = MachineBundle(path: dir)
-            if let config = try? existing.configuration, config.id != entry {
+            if let config = try? existing.configuration,
+                !(FilePath.Component(config.id).map { ReservedDirectory.sameEntry(root.appending($0), dir) } ?? false)
+            {
                 let reason =
-                    "the bundle \(dir.string) of the machine '\(entry)' holds the configuration of the machine '\(config.id)',"
-                    + " whose name this file system treats as the same; boot, delete and changes of '\(config.id)' are refused so that"
+                    "the bundle \(dir.string) holds the machine '\(config.id)', but the bundle path of '\(config.id)' is not that directory;"
+                    + " boot, delete and changes of '\(config.id)' are refused so that"
                     + " no data is lost: copy out what you need, then remove the bundle by hand and restart the container system"
                 log.error("machine bundle holds two machines", metadata: ["path": "\(dir.string)", "reason": "\(reason)"])
                 if let bootConfig = try? existing.bootConfig {

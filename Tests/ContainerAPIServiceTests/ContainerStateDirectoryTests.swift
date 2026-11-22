@@ -211,16 +211,34 @@ struct ContainerStateDirectoryTests {
         }
     }
 
-    @Test("a directory whose name differs from the container it holds is kept, and its delete is refused")
-    func renamedDirectoryIsKept() async throws {
+    @Test(
+        "a healthy container whose directory name differs only in case loads and deletes",
+        .enabled(if: tempDirIsCaseInsensitive(), "needs a case-insensitive temporary directory"),
+        arguments: [true, false]
+    )
+    func caseRenamedDirectoryIsHealthy(started: Bool) async throws {
         try await TemporaryStorage.withTempDir { appRoot in
-            let directory = try writeContainer(appRoot: appRoot, directory: "cdir", runtimeID: "CDIR", bundleID: nil)
+            // Both stored IDs agree; only the directory's spelling differs (a case-only rename, or
+            // a container that was never started and has only its runtime configuration).
+            let directory = try writeContainer(appRoot: appRoot, directory: "webdir", runtimeID: "WebDir", bundleID: started ? "WebDir" : nil)
+            let service = try makeService(appRoot: appRoot)
+
+            #expect(try await service.list().map(\.id) == ["WebDir"])
+            try await service.delete(id: "WebDir", force: true)
+            #expect(!FileManager.default.fileExists(atPath: directory.path))
+        }
+    }
+
+    @Test("a directory that its container's ID does not lead to is kept, and its delete is refused")
+    func unreachableDirectoryIsKept() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = try writeContainer(appRoot: appRoot, directory: "xdir", runtimeID: "ydir", bundleID: "ydir")
             let before = try contents(of: directory)
             let service = try makeService(appRoot: appRoot)
 
-            #expect(try await service.list().map(\.id) == ["CDIR"])
+            #expect(try await service.list().map(\.id) == ["ydir"])
             let error = await #expect(throws: ContainerizationError.self) {
-                try await service.delete(id: "CDIR", force: true)
+                try await service.delete(id: "ydir", force: true)
             }
             #expect(error?.code == .invalidState)
             #expect(try contents(of: directory) == before)
