@@ -56,7 +56,30 @@ struct ContainerStateDirectoryTests {
         }
     }
 
-    private func makeService(appRoot: FilePath) throws -> ContainersService {
+    /// The launchd labels that the service asked to boot out. Nothing reaches launchd.
+    private final class Bootouts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var labels: [String] = []
+        func record(_ label: String) { lock.withLock { labels.append(label) } }
+        var all: [String] { lock.withLock { labels } }
+    }
+
+    /// Host effects for tests: boot-outs are recorded, the init block is a file under the test root.
+    private func hostEffects(appRoot: FilePath, bootouts: Bootouts) -> ContainersService.HostEffects {
+        let initBlock = appRoot.appending("initfs.ext4").string
+        return ContainersService.HostEffects(
+            deregister: { label in
+                bootouts.record(label)
+                return 0
+            },
+            initBlock: { _, _ in
+                FileManager.default.createFile(atPath: initBlock, contents: Data("initfs".utf8))
+                return .block(format: "ext4", source: initBlock, destination: "/", options: ["ro"])
+            }
+        )
+    }
+
+    private func makeService(appRoot: FilePath, bootouts: Bootouts = Bootouts()) throws -> ContainersService {
         let appURL = URL(fileURLWithPath: appRoot.string)
         let plugins = appURL.appendingPathComponent("plugins")
         try FileManager.default.createDirectory(
@@ -72,7 +95,8 @@ struct ContainerStateDirectoryTests {
             appRoot: appURL,
             pluginLoader: pluginLoader,
             containerSystemConfig: ContainerSystemConfig(),
-            log: log
+            log: log,
+            hostEffects: hostEffects(appRoot: appRoot, bootouts: bootouts)
         )
     }
 
@@ -152,11 +176,16 @@ struct ContainerStateDirectoryTests {
             let service = try makeService(appRoot: appRoot)
 
             let error = await #expect(throws: ContainerizationError.self) {
+                // The init block and the root file system come from the test, so on the old code
+                // this create runs to its write into the existing directory.
                 try await service.create(
                     configuration: configuration(id: "CFOLD"),
                     kernel: kernel,
-                    options: ContainerCreateOptions(autoRemove: false),
-                    initImage: "folded-name-test.invalid/none:none"
+                    options: ContainerCreateOptions(
+                        autoRemove: false,
+                        rootFsOverride: .block(
+                            format: "ext4", source: appRoot.appending("rootfs-override.ext4").string, destination: "/", options: [])),
+                    initImage: nil
                 )
             }
             #expect(error?.code == .exists)
@@ -198,15 +227,17 @@ struct ContainerStateDirectoryTests {
         }
     }
 
-    @Test("a container whose directory holds only its own configuration still deletes")
+    @Test("a container whose directory holds only its own configuration still deletes, and only its label is booted out")
     func ordinaryContainerDeletes() async throws {
         try await TemporaryStorage.withTempDir { appRoot in
             let directory = try writeContainer(appRoot: appRoot, directory: "cok", runtimeID: "cok", bundleID: "cok")
-            let service = try makeService(appRoot: appRoot)
+            let bootouts = Bootouts()
+            let service = try makeService(appRoot: appRoot, bootouts: bootouts)
 
             try await service.delete(id: "cok", force: true)
             #expect(!FileManager.default.fileExists(atPath: directory.path))
             #expect(try await service.list().isEmpty)
+            #expect(bootouts.all.count == 1 && bootouts.all[0].hasSuffix(".container-runtime-linux.cok"))
         }
     }
 }

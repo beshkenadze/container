@@ -32,6 +32,29 @@ import Logging
 import SystemPackage
 
 public actor ContainersService {
+    /// What the service does outside its data root: launchd and the image service. Tests replace
+    /// it, so that they never stop a real service or fetch a real image.
+    public struct HostEffects: Sendable {
+        /// `launchctl bootout` of a full service label; returns launchctl's status.
+        public var deregister: @Sendable (_ fullServiceLabel: String) throws -> Int32
+        /// The init block for a create; nil fetches the configured init image.
+        public var initBlock: (@Sendable (_ platform: ContainerizationOCI.Platform, _ imageRef: String?) async throws -> Filesystem)?
+
+        public init(
+            deregister: @escaping @Sendable (_ fullServiceLabel: String) throws -> Int32,
+            initBlock: (@Sendable (_ platform: ContainerizationOCI.Platform, _ imageRef: String?) async throws -> Filesystem)? = nil
+        ) {
+            self.deregister = deregister
+            self.initBlock = initBlock
+        }
+
+        public static let live = HostEffects(deregister: { label in
+            var status: Int32 = -1
+            try ServiceManager.deregister(fullServiceLabel: label, status: &status)
+            return status
+        })
+    }
+
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
@@ -69,6 +92,7 @@ public actor ContainersService {
     private let containerSystemConfig: ContainerSystemConfig
 
     private let lock: AsyncLock
+    private let hostEffects: HostEffects
     private var containers: [String: ContainerState]
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
@@ -79,7 +103,8 @@ public actor ContainersService {
         pluginLoader: PluginLoader,
         containerSystemConfig: ContainerSystemConfig,
         log: Logger,
-        debugHelpers: Bool = false
+        debugHelpers: Bool = false,
+        hostEffects: HostEffects = .live
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try PathUtils.createDirectoryExcludingFromBackup(containerRoot)
@@ -90,15 +115,16 @@ public actor ContainersService {
         self.containerSystemConfig = containerSystemConfig
         self.log = log
         self.debugHelpers = debugHelpers
+        self.hostEffects = hostEffects
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
-        self.containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
+        self.containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log, hostEffects: hostEffects)
     }
 
     public func setNetworksService(_ service: NetworksService) async {
         self.networksService = service
     }
 
-    static func loadAtBoot(root: URL, loader: PluginLoader, log: Logger) throws -> [String: ContainerState] {
+    static func loadAtBoot(root: URL, loader: PluginLoader, log: Logger, hostEffects: HostEffects) throws -> [String: ContainerState] {
         var directories = try FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey]
@@ -133,8 +159,7 @@ public actor ContainersService {
                         runtimeName: config.runtimeHandler,
                         instanceId: config.id)
 
-                    var status: Int32 = -1
-                    try? ServiceManager.deregister(fullServiceLabel: label, status: &status)
+                    let status = (try? hostEffects.deregister(label)) ?? -1
                     if status != 0 {
                         log.warning(
                             "failed to deregister service",
@@ -338,7 +363,12 @@ public actor ContainersService {
                 ]
             )
             do {
-                let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
+                let initFilesystem: Filesystem
+                if let initBlock = self.hostEffects.initBlock {
+                    initFilesystem = try await initBlock(systemPlatform.ociPlatform(), initImage)
+                } else {
+                    initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
+                }
 
                 self.log.debug(
                     "create snapshot",
@@ -483,7 +513,7 @@ public actor ContainersService {
                 )
 
                 await self.exitMonitor.stopTracking(id: id)
-                try? ServiceManager.deregister(fullServiceLabel: label)
+                _ = try? self.hostEffects.deregister(label)
                 throw error
             }
         }
@@ -1061,7 +1091,7 @@ public actor ContainersService {
         // This may also fail if the service was already deregistered or
         // the process was killed externally.
         do {
-            try ServiceManager.deregister(fullServiceLabel: label)
+            _ = try self.hostEffects.deregister(label)
             self.log.info("deregistered runtime service", metadata: ["id": "\(id)"])
         } catch {
             self.log.error(
@@ -1139,7 +1169,7 @@ public actor ContainersService {
                 runtimeName: config.runtimeHandler,
                 instanceId: id
             )
-            try? ServiceManager.deregister(fullServiceLabel: label)
+            _ = try? self.hostEffects.deregister(label)
         }
 
         // Always try to delete the bundle directory, even if it's incomplete
