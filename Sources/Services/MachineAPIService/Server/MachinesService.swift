@@ -42,6 +42,16 @@ public actor MachinesService {
         var id: String { snapshot.configuration.id }
 
         var logger: Task<Void, Never>?
+
+        /// Set when the machine's bundle directory is named for another machine (see
+        /// `loadAtBoot`). Boot, delete and configuration changes are then refused.
+        var sharedDirectory: String? = nil
+
+        func refuseIfSharedDirectory() throws {
+            if let sharedDirectory {
+                throw ContainerizationError(.invalidState, message: sharedDirectory)
+            }
+        }
     }
 
     private var serviceState: ServiceState
@@ -90,6 +100,27 @@ public actor MachinesService {
             guard FileManager.default.fileExists(atPath: dir.string, isDirectory: &isDirectory), isDirectory.boolValue else {
                 continue
             }
+
+            // Before machine creates reserved their bundle directory, a create under a name that
+            // the file system folds onto an existing bundle (`Dev` beside `dev` on a
+            // case-insensitive volume) wrote its configuration into the existing bundle. Keep such
+            // a bundle exactly as it is: its root file system belongs to the other machine.
+            let existing = MachineBundle(path: dir)
+            if let config = try? existing.configuration, config.id != entry {
+                let reason =
+                    "the bundle \(dir.string) of the machine '\(entry)' holds the configuration of the machine '\(config.id)',"
+                    + " whose name this file system treats as the same; boot, delete and changes of '\(config.id)' are refused so that"
+                    + " no data is lost: copy out what you need, then remove the bundle by hand and restart the container system"
+                log.error("machine bundle holds two machines", metadata: ["path": "\(dir.string)", "reason": "\(reason)"])
+                if let bootConfig = try? existing.bootConfig {
+                    results[config.id] = MachineState(
+                        snapshot: .init(configuration: config, status: .stopped, bootConfig: bootConfig, createdDate: nil, containerId: nil),
+                        sharedDirectory: reason
+                    )
+                }
+                continue
+            }
+
             do {
                 try MachineBundle.sync(path: dir, resourceRoot: resourceRoot)
             } catch {
@@ -187,12 +218,24 @@ public actor MachinesService {
             }
 
             let path = try self.bundlePath(id: configuration.id)
-            let bundle = try MachineBundle.create(
-                path: path,
-                machineConfiguration: configuration,
-                resourceRoot: self.resourceRoot,
-                bootConfig: bootConfig,
-            )
+            // From here on the create writes only inside the directory that it reserves.
+            let directory = try await self.reserveBundleDirectory(id: configuration.id, path: path)
+            let bundle: MachineBundle
+            do {
+                bundle = try MachineBundle.create(
+                    path: path,
+                    machineConfiguration: configuration,
+                    resourceRoot: self.resourceRoot,
+                    bootConfig: bootConfig,
+                )
+            } catch {
+                do {
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error("failed to remove the bundle of a container machine whose create failed: \(cleanupError)")
+                }
+                throw error
+            }
 
             do {
                 let machineImage = ClientImage(description: configuration.image)
@@ -225,11 +268,33 @@ public actor MachinesService {
         }
     }
 
+    /// Reserves the bundle directory of a new machine. The file system decides whether `id`
+    /// equals the name of an existing bundle: on a case-insensitive volume `Dev` and `dev` are one
+    /// directory, which holds the other machine's configuration and root file system.
+    private func reserveBundleDirectory(id: String, path: FilePath) async throws -> ReservedDirectory {
+        do {
+            return try ReservedDirectory.reserve(path)
+        } catch is ReservedDirectory.Exists {
+            let owner = self.machines.keys.first { other in
+                (try? self.bundlePath(id: other)).map { ReservedDirectory.sameEntry($0, path) } ?? false
+            }
+            if let owner {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container machine '\(id)' cannot be created: on this file system its name is the same as that of the existing machine '\(owner)'")
+            }
+            throw ContainerizationError(
+                .exists,
+                message: "container machine '\(id)' cannot be created: \(path.string) already exists and belongs to no machine; move it away to create the machine")
+        }
+    }
+
     public func delete(id: String) async throws {
         self.log.debug("\(#function)")
 
         try await self.lock.withLock { context in
             let state = try await self._getMachineState(id: id)
+            try state.refuseIfSharedDirectory()
 
             switch state.snapshot.status {
             case .running:
@@ -267,6 +332,7 @@ public actor MachinesService {
         self.log.debug("\(#function)")
         try await self.lock.withLock { context in
             var state = try await self._getMachineState(id: id)
+            try state.refuseIfSharedDirectory()
             let path = try self.bundlePath(id: id)
             let bundle = MachineBundle(path: path)
             try bundle.set(bootConfig: bootConfig)
@@ -337,6 +403,7 @@ public actor MachinesService {
 
         return try await self.lock.withLock { context in
             var state = try await self._getMachineState(id: id)
+            try state.refuseIfSharedDirectory()
 
             switch state.snapshot.status {
             case .running:
