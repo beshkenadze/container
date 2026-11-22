@@ -272,12 +272,12 @@ public actor MachinesService {
                     self.log.error("failed to remove the reservation marker of container machine \(configuration.id): \(error)")
                 }
             } catch {
+                // The same token-checked removal as above: only this create's own reservation.
                 do {
-                    try bundle.delete()
-                } catch {
-                    self.log.error("failed to delete bundle for container machine \(configuration.id)")
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error("failed to remove the bundle of a container machine whose create failed: \(cleanupError)")
                 }
-
                 throw error
             }
         }

@@ -195,4 +195,20 @@ struct MachineStateDirectoryTests {
             try await service.delete(id: "MWEB")
         }
     }
+
+    @Test("a create that fails after its bundle was made removes only its own reservation, and the name can be used again")
+    func createFailureAfterTheBundleRollsBack() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let resources = try resourceRoot(appRoot)
+            let service = try MachinesService(appRoot: appRoot, resourceRoot: resources, log: log)
+            let directory = appRoot.appending("machines/m1")
+
+            // The image service does not run in tests: the snapshot fetch fails after the bundle was made.
+            await #expect(throws: (any Error).self) {
+                try await service.create(configuration: configuration(id: "m1"), bootConfig: bootConfig())
+            }
+            #expect(!FileManager.default.fileExists(atPath: directory.string))
+            #expect(try await service.list().isEmpty)
+        }
+    }
 }
