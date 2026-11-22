@@ -29,15 +29,20 @@ import SystemPackage
 /// equal name, so the file system decides what "the same name" is. A create writes only inside
 /// a directory that it reserved, and a failed create removes only that directory.
 ///
-/// A reservation is marked: `reserve` writes the file `.reserved` before anything else, and
-/// `publish` removes it when the create has written its entity. A directory that holds nothing,
-/// or only that marker, was left by a create that stopped before it wrote anything (a crash, or
-/// an older version that made the directory before it checked its options). Such a directory is
-/// abandoned and may be reclaimed. A directory with anything else in it is never removed here.
+/// A reservation is marked: `reserve` writes the file `.reserved`, holding a token of its own,
+/// before anything else, and `publish` removes it when the create has written its entity. A
+/// directory that holds nothing, or only the marker, was left by a create that stopped before it
+/// wrote anything (a crash, or an older version that made the directory before it checked its
+/// options). Such a directory is abandoned and may be reclaimed. A directory with anything else
+/// in it is never removed here. A rollback and a publish act only on a marker with their own
+/// token, so a create never removes a directory that another reservation took over.
 public struct ReservedDirectory: Sendable {
     public let path: FilePath
+    /// The content of this reservation's marker.
+    public let token: String
 
     public static let markerName = ".reserved"
+    private static let tokenPrefix = "container-reservation v1 "
 
     /// The file system already has an entry under a name equal to the last component of `path`.
     public struct Exists: Error, CustomStringConvertible {
@@ -45,8 +50,23 @@ public struct ReservedDirectory: Sendable {
         public var description: String { "\(path.string) already exists" }
     }
 
-    private init(path: FilePath) {
+    private init(path: FilePath, token: String) {
         self.path = path
+        self.token = token
+    }
+
+    /// The token of a marker that this code wrote, or nil for anything else at that path.
+    private static func markerToken(in directory: FilePath) -> String? {
+        let marker = directory.appending(markerName)
+        var info = stat()
+        guard lstat(marker.string, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size < 128,
+            let data = FileManager.default.contents(atPath: marker.string),
+            let text = String(data: data, encoding: .utf8), text.hasPrefix(tokenPrefix),
+            UUID(uuidString: String(text.dropFirst(tokenPrefix.count))) != nil
+        else {
+            return nil
+        }
+        return text
     }
 
     /// Creates the directory `path`. Its parent must exist.
@@ -61,24 +81,37 @@ public struct ReservedDirectory: Sendable {
             }
             throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
         }
-        let directory = ReservedDirectory(path: path)
+        let directory = ReservedDirectory(path: path, token: tokenPrefix + UUID().uuidString)
         do {
-            try directory.createFile(markerName)
+            let marker = try directory.createFile(markerName)
+            try Data(directory.token.utf8).write(to: URL(fileURLWithPath: marker.string))
         } catch {
+            _ = unlink(path.appending(markerName).string)
             rmdir(path.string)
             throw error
         }
         return directory
     }
 
-    /// Marks the create as complete: the directory now holds an entity.
+    /// The directory no longer holds this reservation's marker: another reservation took it over.
+    public struct NotOurs: Error, CustomStringConvertible {
+        public let path: FilePath
+        public var description: String { "\(path.string) is no longer this create's reservation; it was left as it is" }
+    }
+
+    /// Marks the create as complete: the directory now holds an entity. Removes the marker only
+    /// when it is this reservation's own.
     public func publish() throws {
+        guard Self.markerToken(in: path) == token else {
+            throw NotOurs(path: path)
+        }
         guard unlink(path.appending(Self.markerName).string) == 0 || errno == ENOENT else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 
-    /// Whether `path` is a directory (not a link) that holds nothing, or only the marker.
+    /// Whether `path` is a directory (not a link) that holds nothing, or only a marker that this
+    /// code wrote.
     public static func isAbandoned(_ path: FilePath) -> Bool {
         var info = stat()
         guard lstat(path.string, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
@@ -111,9 +144,12 @@ public struct ReservedDirectory: Sendable {
         return file
     }
 
-    /// Removes the reserved directory and everything in it. Use only to undo the create that
-    /// reserved it.
+    /// Removes the reserved directory and everything in it, when it still holds this
+    /// reservation's marker. Use only to undo the create that reserved it.
     public func release() throws {
+        guard Self.markerToken(in: path) == token else {
+            throw NotOurs(path: path)
+        }
         try FileManager.default.removeItem(atPath: path.string)
     }
 

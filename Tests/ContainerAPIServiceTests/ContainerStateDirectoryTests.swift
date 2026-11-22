@@ -23,6 +23,7 @@ import Containerization
 import ContainerizationError
 import Foundation
 import Logging
+import Synchronization
 import SystemPackage
 import Testing
 
@@ -79,7 +80,9 @@ struct ContainerStateDirectoryTests {
         )
     }
 
-    private func makeService(appRoot: FilePath, bootouts: Bootouts = Bootouts(), runtimePlugin: Bool = true) throws -> ContainersService {
+    private func makeService(
+        appRoot: FilePath, bootouts: Bootouts = Bootouts(), runtimePlugin: Bool = true, effects: ContainersService.HostEffects? = nil
+    ) throws -> ContainersService {
         let appURL = URL(fileURLWithPath: appRoot.string)
         let plugins = appURL.appendingPathComponent("plugins")
         try FileManager.default.createDirectory(
@@ -96,7 +99,7 @@ struct ContainerStateDirectoryTests {
             pluginLoader: pluginLoader,
             containerSystemConfig: ContainerSystemConfig(),
             log: log,
-            hostEffects: hostEffects(appRoot: appRoot, bootouts: bootouts)
+            hostEffects: effects ?? hostEffects(appRoot: appRoot, bootouts: bootouts)
         )
     }
 
@@ -351,6 +354,46 @@ struct ContainerStateDirectoryTests {
             #expect(listed.map(\.id) == ["w"])
             #expect(listed.first?.configuration.creationDate == replacement.creationDate)
             #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/w").string))
+        }
+    }
+
+    @Test("a second create of a name waits for the first; when the first fails, the second's bundle stays")
+    func failingCreateLeavesTheNextOne() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let (gate, open) = AsyncStream<Void>.makeStream()
+            let calls = Mutex(0)
+            let initBlock = appRoot.appending("initfs.ext4").string
+            FileManager.default.createFile(atPath: initBlock, contents: Data("initfs".utf8))
+            let effects = ContainersService.HostEffects(
+                deregister: { _ in 0 },
+                initBlock: { _, _ in
+                    // The first create waits in its init-image fetch, then fails.
+                    if calls.withLock({ count in
+                        count += 1
+                        return count
+                    }) == 1 {
+                        for await _ in gate { break }
+                        throw ContainerizationError(.internalError, message: "fetch failed")
+                    }
+                    return .block(format: "ext4", source: initBlock, destination: "/", options: ["ro"])
+                })
+            let service = try makeService(appRoot: appRoot, effects: effects)
+            let options = ContainerCreateOptions(
+                autoRemove: false,
+                rootFsOverride: .block(format: "ext4", source: appRoot.appending("rootfs-override.ext4").string, destination: "/", options: []))
+
+            let first = Task { try await service.create(configuration: configuration(id: "same"), kernel: kernel, options: options, initImage: nil) }
+            let pause = Duration.milliseconds(200)
+            try await Task.sleep(for: pause)
+            let second = Task { try await service.create(configuration: configuration(id: "same"), kernel: kernel, options: options, initImage: nil) }
+            try await Task.sleep(for: pause)
+            open.yield()
+            open.finish()
+
+            await #expect(throws: ContainerizationError.self) { try await first.value }
+            try await second.value
+            #expect(try await service.list().map(\.id) == ["same"])
+            #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/same/runtime-configuration.json").string))
         }
     }
 }

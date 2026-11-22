@@ -59,3 +59,21 @@ struct ReservedDirectoryTests {
         }
     }
 }
+
+extension ReservedDirectoryTests {
+    @Test("a rollback and a publish leave a directory that another reservation took over")
+    func rollbackOnlyOwnReservation() async throws {
+        try await TemporaryStorage.withTempDir { root in
+            let directory = try ReservedDirectory.reserve(root.appending("v"))
+            // Another reservation of the same path (another server on the root, after a reclaim).
+            let other = "container-reservation v1 \(UUID().uuidString)"
+            try Data(other.utf8).write(to: URL(fileURLWithPath: root.appending("v").appending(ReservedDirectory.markerName).string))
+            try Data("its image".utf8).write(to: URL(fileURLWithPath: root.appending("v").appending("volume.img").string))
+
+            #expect(throws: ReservedDirectory.NotOurs.self) { try directory.release() }
+            #expect(throws: ReservedDirectory.NotOurs.self) { try directory.publish() }
+            #expect(FileManager.default.fileExists(atPath: root.appending("v").appending("volume.img").string))
+            #expect(FileManager.default.fileExists(atPath: root.appending("v").appending(ReservedDirectory.markerName).string))
+        }
+    }
+}
