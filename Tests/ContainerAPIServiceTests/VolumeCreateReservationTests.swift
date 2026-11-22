@@ -81,9 +81,10 @@ struct VolumeCreateReservationTests {
             try Data("user data that must stay".utf8).write(to: URL(fileURLWithPath: image.string))
             let before = try state(of: image)
 
-            await #expect(throws: VolumeError.self) {
+            let error = await #expect(throws: VolumeError.self) {
                 _ = try await service.create(name: "left", driverOpts: small)
             }
+            #expect(error?.localizedDescription.contains("mv '\(directory.string)' '\(directory.string).saved'") == true)
 
             #expect(try state(of: image) == before)
             #expect(try await service.list().isEmpty)

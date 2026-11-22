@@ -287,7 +287,7 @@ public actor VolumesService {
                 return try ReservedDirectory.reserve(path)
             }
             throw VolumeError.storageError(
-                "cannot create volume '\(name)': \(path.string) already exists and belongs to no volume, and it holds files (an interrupted create can leave one); move it away to create the volume"
+                "cannot create volume '\(name)': \(path.string) already exists, holds files and belongs to no volume. An earlier create that stopped before it finished leaves such a directory, and its files can hold data. To keep them, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the volume again"
             )
         } catch {
             throw VolumeError.storageError("cannot create the directory of volume '\(name)': \(error)")

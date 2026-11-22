@@ -459,7 +459,7 @@ public actor ContainersService {
             throw ContainerizationError(
                 .exists,
                 message:
-                    "container '\(id)' cannot be created: \(path.string) already exists and belongs to no container, and it holds files (an interrupted create can leave one); move it away to create the container"
+                    "container '\(id)' cannot be created: \(path.string) already exists, holds files and belongs to no container. An earlier create that stopped before it finished leaves such a directory, and its files can hold data. To keep them, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the container again"
             )
         }
     }
