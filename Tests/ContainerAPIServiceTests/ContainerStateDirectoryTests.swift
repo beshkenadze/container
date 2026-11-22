@@ -316,4 +316,41 @@ struct ContainerStateDirectoryTests {
             #expect(try await service.list().isEmpty)
         }
     }
+
+    @Test("a delete that waited behind a replacement of its container does not remove the replacement")
+    func staleDeleteKeepsTheReplacement() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            _ = try writeContainer(appRoot: appRoot, directory: "w", runtimeID: "w", bundleID: "w")
+            let service = try makeService(appRoot: appRoot)
+            let options = ContainerCreateOptions(
+                autoRemove: false,
+                rootFsOverride: .block(format: "ext4", source: appRoot.appending("rootfs-override.ext4").string, destination: "/", options: []))
+
+            // Hold the service lock, then queue in this order: delete, create of a replacement
+            // under the same name, delete. Both deletes read the original's state before they wait.
+            let (gate, open) = AsyncStream<Void>.makeStream()
+            let holder = Task { try await service.withContainerList(logMetadata: [:]) { _ in for await _ in gate { break } } }
+            let pause = Duration.milliseconds(200)
+            try await Task.sleep(for: pause)
+            let first = Task { try await service.delete(id: "w", force: false) }
+            try await Task.sleep(for: pause)
+            let replacement = configuration(id: "w")
+            let create = Task { try await service.create(configuration: replacement, kernel: kernel, options: options, initImage: nil) }
+            try await Task.sleep(for: pause)
+            let second = Task { try await service.delete(id: "w", force: false) }
+            try await Task.sleep(for: pause)
+            open.yield()
+            open.finish()
+            try await holder.value
+
+            try await first.value
+            try await create.value
+            let error = await #expect(throws: ContainerizationError.self) { try await second.value }
+            #expect(error?.code == .notFound)
+            let listed = try await service.list()
+            #expect(listed.map(\.id) == ["w"])
+            #expect(listed.first?.configuration.creationDate == replacement.creationDate)
+            #expect(FileManager.default.fileExists(atPath: appRoot.appending("containers/w").string))
+        }
+    }
 }

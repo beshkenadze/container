@@ -963,6 +963,9 @@ public actor ContainersService {
 
         let state = try self._getContainerState(id: id)
         try state.refuseIfSharedDirectory()
+        // This state is read before the lock: the container can be deleted and created again
+        // under the same name while this delete waits. Its creation tells them apart.
+        let creationDate = state.snapshot.configuration.creationDate
         switch state.snapshot.status {
         case .running:
             if !force {
@@ -985,6 +988,7 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
+                try await self.requireSameContainer(id: id, creationDate: creationDate)
                 try await self.cleanUp(id: id, context: context)
                 self.log.info(
                     "ContainersService: successful cleanup",
@@ -1001,8 +1005,19 @@ public actor ContainersService {
             )
         default:
             try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+                try await self.requireSameContainer(id: id, creationDate: creationDate)
                 try await self.cleanUp(id: id, context: context)
             }
+        }
+    }
+
+    /// Throws when the container `id` is gone, or is another container created under the same
+    /// name since the caller read its state.
+    private func requireSameContainer(id: String, creationDate: Date) throws {
+        guard let current = self.containers[id], current.snapshot.configuration.creationDate == creationDate else {
+            throw ContainerizationError(
+                .notFound,
+                message: "container \(id) was deleted or replaced while this delete waited; nothing was removed")
         }
     }
 
