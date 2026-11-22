@@ -7,7 +7,9 @@
 # Every object carries a random suffix. Before it makes anything, the script refuses to run when
 # any entity of any kind matches one of its names in either spelling: in the directories under
 # the daemon's own app root (as the file system compares names) and in every listing. Its cleanup
-# removes only the objects that it created. --machines also checks container machines (it boots
+# removes only the objects that it created, by name. It is for a host where nobody else creates
+# entities whose names start with vfold, cfold or mfold during the run: an entity that another
+# actor creates under one of its names between the preflight and the cleanup would be removed. --machines also checks container machines (it boots
 # an alpine machine, about a minute).
 #
 # Output per entity: PASS (refused, the first entity is intact), FAIL (the first entity was
@@ -53,14 +55,23 @@ ROOT="${ROOT%/}"
 [[ -n "$ROOT" && -d "$ROOT" ]] || die "the daemon reports no usable app root ($ROOT)"
 MACHINE_ROOT="$ROOT/plugin-state/machine-apiserver/machines"
 
-# Case behaviour of the data root decides what the checks expect. The probe never replaces an
-# existing file: noclobber makes the redirection fail instead.
-probe="$ROOT/.foldprobe-$RUN"
-(set -o noclobber; : >"$probe") 2>/dev/null || die "cannot create the probe $probe (it exists, or the root is not writable)"
-CASE_INSENSITIVE=0
-[[ -e "$ROOT/$(upper ".foldprobe-$RUN")" ]] && CASE_INSENSITIVE=1
-rm -f -- "$probe"
-echo "data root: $ROOT (case-insensitive: $CASE_INSENSITIVE), run: $RUN"
+# The case behaviour of each entity root decides what its check expects: a root can be a link to,
+# or a mount of, another file system. The probe never replaces an existing file: noclobber makes
+# the redirection fail instead.
+folds() { # directory -> prints 1 when it compares names without case, 0 otherwise
+    local dir="$1"
+    # A root that does not exist yet is probed at its nearest existing parent; nothing is created.
+    while [[ ! -d "$dir" ]]; do dir="$(dirname "$dir")"; done
+    local probe="$dir/.foldprobe-$RUN"
+    (set -o noclobber; : >"$probe") 2>/dev/null || die "cannot create the probe $probe (it exists, or the root is not writable)"
+    [[ -e "$dir/$(upper ".foldprobe-$RUN")" ]] && echo 1 || echo 0
+    rm -f -- "$probe"
+}
+FOLD_VOLUMES=$(folds "$ROOT/volumes")
+FOLD_CONTAINERS=$(folds "$ROOT/containers")
+FOLD_MACHINES=0
+[[ $WITH_MACHINES -eq 1 ]] && FOLD_MACHINES=$(folds "$MACHINE_ROOT")
+echo "data root: $ROOT (case-insensitive: volumes $FOLD_VOLUMES, containers $FOLD_CONTAINERS, machines $FOLD_MACHINES), run: $RUN"
 
 # Every listing, read once. A listing that fails stops the run: an unseen entity could match.
 LISTINGS="$("$C" list --all --format json)" || die "container list failed"
@@ -88,7 +99,11 @@ result() { # entity verdict detail
     return 0
 }
 
+# A refusal of the second create counts only when its error is the name conflict.
+conflict() { [[ "$1" == *"already exist"* || "$1" == *"cannot be created"* ]]; }
+
 check_volumes() {
+    local FOLD=$FOLD_VOLUMES
     local first="vfold$RUN" second
     second="$(upper "$first")"
     absent "$first"
@@ -102,18 +117,21 @@ check_volumes() {
     [[ $rc -eq 0 ]] && MADE_VOLUMES+=("$second")
     local data
     data="$("$C" run --rm -v "$first:/data" busybox:1.37-musl cat /data/p 2>/dev/null)"
-    if [[ $CASE_INSENSITIVE -eq 0 ]]; then
+    if [[ $FOLD -eq 0 ]]; then
         result volumes N/A "case-sensitive data root, create $second rc=$rc"
     elif [[ "$data" != precious ]]; then
         result volumes FAIL "create $second (rc=$rc: ${out//$'\n'/ }) erased $first: /data/p reads '${data//$'\n'/ }'"
     elif [[ $rc -eq 0 ]]; then
         result volumes FAIL "create $second succeeded on a case-insensitive root"
+    elif ! conflict "$out"; then
+        result volumes FAIL "create $second failed for another reason: ${out//$'\n'/ }"
     else
         result volumes PASS "create $second refused (${out//$'\n'/ }); $first still holds its data"
     fi
 }
 
 check_containers() {
+    local FOLD=$FOLD_CONTAINERS
     local first="cfold$RUN" second
     second="$(upper "$first")"
     absent "$first"
@@ -129,40 +147,58 @@ check_containers() {
     fi
     local data
     data="$("$C" export "$first" 2>/dev/null | tar -xOf - p 2>/dev/null)"
-    if [[ $CASE_INSENSITIVE -eq 0 ]]; then
+    if [[ $FOLD -eq 0 ]]; then
         result containers N/A "case-sensitive data root, create $second rc=$rc"
     elif [[ "$data" != *precious* ]]; then
         result containers FAIL "create and delete of $second (rc=$rc: ${out//$'\n'/ }) destroyed $first: ${data//$'\n'/ }"
     elif [[ $rc -eq 0 ]]; then
         result containers FAIL "create $second succeeded on a case-insensitive root"
+    elif ! conflict "$out"; then
+        result containers FAIL "create $second failed for another reason: ${out//$'\n'/ }"
     else
         result containers PASS "create $second refused (${out//$'\n'/ }); $first still holds its data"
     fi
 }
 
+# The state of a machine bundle that a folded create must not change: its configuration, its boot
+# configuration, and the identity of its root file system.
+machine_state() { # bundle directory
+    shasum "$1/config.json" "$1/boot-config.json" 2>/dev/null | cut -d' ' -f1 | tr '\n' ' '
+    stat -f '%i %z %m' "$1/rootfs.ext4" 2>/dev/null
+}
+
 check_machines() {
+    local FOLD=$FOLD_MACHINES
     local first="mfold$RUN" second
     second="$(upper "$first")"
     absent "$first"
-    "$C" machine create alpine:3.22 --name "$first" >/dev/null 2>&1 || die "machine create $first failed"
+    if ! "$C" machine create alpine:3.22 --name "$first" >/dev/null 2>&1; then
+        # A create can publish its bundle and then fail: clean it up too.
+        [[ -d "$MACHINE_ROOT/$first" ]] && MADE_MACHINES+=("$first")
+        die "machine create $first failed"
+    fi
     MADE_MACHINES+=("$first")
     "$C" machine stop "$first" >/dev/null 2>&1
-    local bundle="$MACHINE_ROOT/$first/config.json"
-    [[ -f "$bundle" ]] || die "no bundle configuration at $bundle"
+    local bundle="$MACHINE_ROOT/$first"
+    [[ -f "$bundle/config.json" ]] || die "no bundle configuration at $bundle/config.json"
     local before after out rc
-    before="$(shasum "$bundle" | cut -d' ' -f1)"
+    before="$(machine_state "$bundle")"
     out="$("$C" machine create alpine:3.22 --name "$second" 2>&1)"
     rc=$?
-    [[ $rc -eq 0 ]] && MADE_MACHINES+=("$second")
-    after="$(shasum "$bundle" | cut -d' ' -f1)"
-    if [[ $CASE_INSENSITIVE -eq 0 ]]; then
+    if [[ $rc -eq 0 ]] || "$C" machine list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$second"; then
+        MADE_MACHINES+=("$second")
+    fi
+    after="$(machine_state "$bundle")"
+    if [[ $FOLD -eq 0 ]]; then
         result machines N/A "case-sensitive data root, create $second rc=$rc"
     elif [[ "$before" != "$after" ]]; then
-        result machines FAIL "create $second (rc=$rc) rewrote the configuration of $first: $(grep -o '"id" *: *"[^"]*"' "$bundle" | head -1)"
+        result machines FAIL "create $second (rc=$rc) changed the bundle of $first: $(grep -o '"id" *: *"[^"]*"' "$bundle/config.json" | head -1)"
     elif [[ $rc -eq 0 ]]; then
         result machines FAIL "create $second succeeded on a case-insensitive root"
+    elif ! conflict "$out"; then
+        result machines FAIL "create $second failed for another reason: ${out//$'\n'/ | }"
     else
-        result machines PASS "create $second refused (${out//$'\n'/ | }); the configuration of $first is unchanged"
+        result machines PASS "create $second refused (${out//$'\n'/ | }); the bundle of $first is unchanged"
     fi
 }
 
