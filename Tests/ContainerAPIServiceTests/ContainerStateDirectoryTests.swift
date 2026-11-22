@@ -79,7 +79,7 @@ struct ContainerStateDirectoryTests {
         )
     }
 
-    private func makeService(appRoot: FilePath, bootouts: Bootouts = Bootouts()) throws -> ContainersService {
+    private func makeService(appRoot: FilePath, bootouts: Bootouts = Bootouts(), runtimePlugin: Bool = true) throws -> ContainersService {
         let appURL = URL(fileURLWithPath: appRoot.string)
         let plugins = appURL.appendingPathComponent("plugins")
         try FileManager.default.createDirectory(
@@ -89,7 +89,7 @@ struct ContainerStateDirectoryTests {
             installRoot: appURL,
             logRoot: nil,
             pluginDirectories: [plugins],
-            pluginFactories: [RuntimePluginFactory()]
+            pluginFactories: runtimePlugin ? [RuntimePluginFactory()] : []
         )
         return try ContainersService(
             appRoot: appURL,
@@ -281,6 +281,39 @@ struct ContainerStateDirectoryTests {
             #expect(error?.code == .exists)
             #expect(error?.message.contains(containers.appending("cheld").string) == true)
             #expect(FileManager.default.fileExists(atPath: containers.appending("cheld").appending("rootfs.ext4").string))
+        }
+    }
+
+    @Test("a container whose runtime plugin is gone is listed and its directory stays")
+    func missingRuntimePluginKeepsTheBundle() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = try writeContainer(appRoot: appRoot, directory: "cplug", runtimeID: "cplug", bundleID: "cplug")
+            let before = try contents(of: directory)
+            let service = try makeService(appRoot: appRoot, runtimePlugin: false)
+
+            #expect(try contents(of: directory) == before)
+            #expect(try await service.list().map(\.id) == ["cplug"])
+            // Its start reports the missing plugin; it does not stop the service.
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await service.bootstrap(id: "cplug", stdio: [nil, nil, nil], dynamicEnv: [:])
+            }
+            #expect(error?.code == .notFound)
+            #expect(try contents(of: directory) == before)
+        }
+    }
+
+    @Test("a directory whose configurations cannot be read stays")
+    func unreadableDirectoryStays() async throws {
+        try await TemporaryStorage.withTempDir { appRoot in
+            let directory = URL(fileURLWithPath: appRoot.appending("containers").appending("cbad").string)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("{ not json".utf8).write(to: directory.appendingPathComponent("config.json"))
+            try Data("data the container wrote".utf8).write(to: directory.appendingPathComponent("rootfs.ext4"))
+            let before = try contents(of: directory)
+            let service = try makeService(appRoot: appRoot)
+
+            #expect(try contents(of: directory) == before)
+            #expect(try await service.list().isEmpty)
         }
     }
 }

@@ -191,16 +191,21 @@ public actor ContainersService {
                     ),
                 )
                 results[config.id] = state
-                guard runtimePlugins.first(where: { $0.name == config.runtimeHandler }) != nil else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "failed to find runtime plugin \(config.runtimeHandler)"
-                    )
+                // The container stays listed without its runtime plugin; its start reports the
+                // missing plugin. Its directory holds its root file system and must not go.
+                if runtimePlugins.first(where: { $0.name == config.runtimeHandler }) == nil {
+                    log.warning(
+                        "container loaded without its runtime plugin",
+                        metadata: [
+                            "id": "\(config.id)",
+                            "runtime": "\(config.runtimeHandler)",
+                        ])
                 }
             } catch {
-                try? FileManager.default.removeItem(at: dir)
-                log.warning(
-                    "failed to load container",
+                // A directory that cannot be loaded can still hold the only copy of a container's
+                // data: keep it, and name it in the log.
+                log.error(
+                    "failed to load container; its directory is kept",
                     metadata: [
                         "path": "\(dir.path)",
                         "error": "\(error)",
@@ -494,6 +499,14 @@ public actor ContainersService {
             let (config, _) = try Self.getContainerConfiguration(at: path)
             try AttachmentNameValidator.validateStored(id: id, networks: config.networks)
 
+            // A container that was loaded without its runtime plugin cannot start.
+            guard let runtimePlugin = self.runtimePlugins.first(where: { $0.name == config.runtimeHandler }) else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "unable to locate runtime plugin \(config.runtimeHandler) for container \(id)"
+                )
+            }
+
             var networkBootstrapInfos = [NetworkBootstrapInfo]()
             for n in config.networks {
                 guard let plugin = try await self.networksService?.plugin(for: n.network) else {
@@ -504,7 +517,7 @@ public actor ContainersService {
 
             do {
                 try Self.registerService(
-                    plugin: self.runtimePlugins.first { $0.name == config.runtimeHandler }!,
+                    plugin: runtimePlugin,
                     loader: self.pluginLoader,
                     configuration: config,
                     path: path,
