@@ -268,10 +268,10 @@ public actor VolumesService {
             return try ReservedDirectory.reserve(path)
         } catch is ReservedDirectory.Exists {
             if let owner = existing.first(where: { ReservedDirectory.sameEntry(FilePath(volumePath(for: $0.name)), path) }) {
-                // `.exists`, as the entity store answered before this check existed, and a
-                // ContainerizationError keeps its code across XPC (a VolumeError does not).
+                // Not `.exists`: callers read that as "an entity with this exact name exists".
+                // A ContainerizationError keeps its code across XPC (a VolumeError does not).
                 throw ContainerizationError(
-                    .exists,
+                    .invalidArgument,
                     message: "volume '\(name)' cannot be created: on this file system its name is the same as that of the existing volume '\(owner.name)'")
             }
             if ReservedDirectory.reclaimIfAbandoned(path) {

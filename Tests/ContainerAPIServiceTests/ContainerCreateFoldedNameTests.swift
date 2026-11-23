@@ -149,7 +149,7 @@ struct ContainerCreateFoldedNameTests {
                     initImage: "folded-name-test.invalid/init:none"
                 )
             }
-            #expect(error?.code == .exists)
+            #expect(error?.code == .invalidArgument)
             #expect(error?.message.contains("'cfold'") == true)
             #expect(try Self.contents(of: directory) == before)
             #expect(try await service.list().map(\.id) == ["cfold"])
@@ -174,7 +174,7 @@ struct ContainerCreateFoldedNameTests {
                     initImage: "folded-name-test.invalid/init:none"
                 )
             }
-            #expect(error?.code == .exists)
+            #expect(error?.code == .invalidState)
             // The suggested place is outside the directory that the server scans at startup.
             #expect(error?.message.contains("move the directory out of \(directory.deletingLastPathComponent().path)") == true)
             // A shell command in the message breaks on quotes in the path and on long names.

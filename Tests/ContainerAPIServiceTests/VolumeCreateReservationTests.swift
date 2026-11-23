@@ -110,7 +110,8 @@ struct VolumeCreateReservationTests {
                 #expect(try state(of: image) == imageBefore)
                 #expect(try state(of: entity) == entityBefore)
                 #expect(try await service.list().map(\.name) == ["CaseVol"])
-                #expect(error?.code == .exists)
+                // Callers read .exists as "an entity with this exact name exists".
+                #expect(error?.code == .invalidArgument)
                 #expect(error?.message.contains("the existing volume 'CaseVol'") == true)
                 // `run -v` treats an error that says "already exists" as an exact match and
                 // inspects the requested name, which hides this conflict behind "not found".

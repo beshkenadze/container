@@ -260,7 +260,7 @@ public actor MachinesService {
             }
             if let owner {
                 throw ContainerizationError(
-                    .exists,
+                    .invalidArgument,
                     message: "container machine '\(id)' cannot be created: on this file system its name is the same as that of the existing machine '\(owner)'")
             }
             if ReservedDirectory.reclaimIfAbandoned(path) {
@@ -268,7 +268,7 @@ public actor MachinesService {
                 return try ReservedDirectory.reserve(path)
             }
             throw ContainerizationError(
-                .exists,
+                .invalidState,
                 message:
                     "container machine '\(id)' cannot be created: \(path.string) holds files and belongs to no machine. To keep the files, move the directory out of \(path.removingLastComponent().string), then create the machine again"
             )

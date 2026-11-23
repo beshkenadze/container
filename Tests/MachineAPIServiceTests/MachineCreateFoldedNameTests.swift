@@ -116,7 +116,7 @@ struct MachineCreateFoldedNameTests {
             let error = await #expect(throws: ContainerizationError.self) {
                 try await service.create(configuration: configuration(id: "MFOLD"), bootConfig: bootConfig())
             }
-            #expect(error?.code == .exists)
+            #expect(error?.code == .invalidArgument)
             #expect(error?.message.contains("'mfold'") == true)
             #expect(try contents(of: directory) == before)
         }
@@ -136,7 +136,7 @@ struct MachineCreateFoldedNameTests {
             let error = await #expect(throws: ContainerizationError.self) {
                 try await service.create(configuration: configuration(id: "mheld"), bootConfig: bootConfig())
             }
-            #expect(error?.code == .exists)
+            #expect(error?.code == .invalidState)
             // The suggested place is outside the directory that the server scans at startup.
             #expect(error?.message.contains("move the directory out of \(held.removingLastComponent().string)") == true)
             // A shell command in the message breaks on quotes in the path and on long names.
