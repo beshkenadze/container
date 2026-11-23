@@ -89,13 +89,13 @@ extension ReservedDirectoryTests {
             // An empty file named .reserved.
             try fm.createDirectory(atPath: root.appending("empty").string, withIntermediateDirectories: false)
             fm.createFile(atPath: root.appending("empty").appending(ReservedDirectory.markerName).string, contents: nil)
-            // A link named .reserved.
+            // A marker that a reservation wrote.
+            let reserved = try ReservedDirectory.reserve(root.appending("ours"))
+            // A link named .reserved that leads to a valid marker.
             try fm.createDirectory(atPath: root.appending("link").string, withIntermediateDirectories: false)
             try fm.createSymbolicLink(
                 atPath: root.appending("link").appending(ReservedDirectory.markerName).string,
-                withDestinationPath: root.appending("text").appending(ReservedDirectory.markerName).string)
-            // A marker that a reservation wrote.
-            let reserved = try ReservedDirectory.reserve(root.appending("ours"))
+                withDestinationPath: reserved.path.appending(ReservedDirectory.markerName).string)
 
             for name in ["text", "empty", "link"] {
                 #expect(!ReservedDirectory.reclaimIfAbandoned(root.appending(name)), "\(name)")
