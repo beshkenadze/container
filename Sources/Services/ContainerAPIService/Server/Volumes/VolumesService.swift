@@ -272,14 +272,14 @@ public actor VolumesService {
                 // ContainerizationError keeps its code across XPC (a VolumeError does not).
                 throw ContainerizationError(
                     .exists,
-                    message: "volume '\(name)' already exists as '\(owner.name)': on this file system the two names are the same")
+                    message: "volume '\(name)' cannot be created: on this file system its name is the same as that of the existing volume '\(owner.name)'")
             }
             if ReservedDirectory.reclaimIfAbandoned(path) {
                 log.info("reclaimed an abandoned volume directory", metadata: ["path": "\(path.string)"])
                 return try ReservedDirectory.reserve(path)
             }
             throw VolumeError.storageError(
-                "cannot create volume '\(name)': \(path.string) already exists, holds files and belongs to no volume. To keep the files, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the volume again"
+                "cannot create volume '\(name)': \(path.string) holds files and belongs to no volume. To keep the files, move the directory out of \(path.removingLastComponent().string), for example `mv '\(path.string)' ~/'\(name).saved'`, then create the volume again"
             )
         } catch {
             throw VolumeError.storageError("cannot create the directory of volume '\(name)': \(error)")

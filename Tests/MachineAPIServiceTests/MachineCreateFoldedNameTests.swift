@@ -137,7 +137,9 @@ struct MachineCreateFoldedNameTests {
                 try await service.create(configuration: configuration(id: "mheld"), bootConfig: bootConfig())
             }
             #expect(error?.code == .exists)
-            #expect(error?.message.contains("mv '\(held.string)' '\(held.string).saved'") == true)
+            // The suggested place is outside the directory that the server scans at startup.
+            #expect(error?.message.contains("mv '\(held.string)' ~/'mheld.saved'") == true)
+            #expect(error?.message.contains("\(held.string).saved") == false)
             #expect(try contents(of: url) == before)
         }
     }

@@ -84,7 +84,8 @@ struct VolumeCreateReservationTests {
             let error = await #expect(throws: VolumeError.self) {
                 _ = try await service.create(name: "left", driverOpts: small)
             }
-            #expect(error?.localizedDescription.contains("mv '\(directory.string)' '\(directory.string).saved'") == true)
+            #expect(error?.localizedDescription.contains("mv '\(directory.string)' ~/'left.saved'") == true)
+            #expect(error?.localizedDescription.contains("\(directory.string).saved") == false)
 
             #expect(try state(of: image) == before)
             #expect(try await service.list().isEmpty)
@@ -109,7 +110,10 @@ struct VolumeCreateReservationTests {
                 #expect(try state(of: entity) == entityBefore)
                 #expect(try await service.list().map(\.name) == ["CaseVol"])
                 #expect(error?.code == .exists)
-                #expect(error?.message.contains("already exists as 'CaseVol'") == true)
+                #expect(error?.message.contains("the existing volume 'CaseVol'") == true)
+                // `run -v` treats an error that says "already exists" as an exact match and
+                // inspects the requested name, which hides this conflict behind "not found".
+                #expect(error?.message.contains("already exists") == false)
             } else {
                 _ = try await service.create(name: "casevol", driverOpts: small)
                 #expect(Set(try await service.list().map(\.name)) == ["CaseVol", "casevol"])

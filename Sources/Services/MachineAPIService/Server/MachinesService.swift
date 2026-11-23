@@ -270,7 +270,7 @@ public actor MachinesService {
             throw ContainerizationError(
                 .exists,
                 message:
-                    "container machine '\(id)' cannot be created: \(path.string) already exists, holds files and belongs to no machine. To keep the files, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the machine again"
+                    "container machine '\(id)' cannot be created: \(path.string) holds files and belongs to no machine. To keep the files, move the directory out of \(path.removingLastComponent().string), for example `mv '\(path.string)' ~/'\(id).saved'`, then create the machine again"
             )
         }
     }
