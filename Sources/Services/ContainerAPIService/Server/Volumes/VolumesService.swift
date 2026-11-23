@@ -259,10 +259,31 @@ public actor VolumesService {
         "\(volumePath(for: name))/\(Self.blockFile)"
     }
 
-    private func createVolumeDirectory(for name: String) throws {
-        let volumePath = volumePath(for: name)
-        let fm = FileManager.default
-        try fm.createDirectory(atPath: volumePath, withIntermediateDirectories: true, attributes: nil)
+    /// Reserves the directory of a new volume. The file system decides whether `name` equals the
+    /// name of an existing directory: on a case-insensitive volume `Data` and `data` are one
+    /// directory, and the existing volume's image must not be formatted.
+    private func reserveVolumeDirectory(for name: String, existing: [VolumeConfiguration]) throws -> ReservedDirectory {
+        let path = FilePath(volumePath(for: name))
+        do {
+            return try ReservedDirectory.reserve(path)
+        } catch is ReservedDirectory.Exists {
+            if let owner = existing.first(where: { ReservedDirectory.sameEntry(FilePath(volumePath(for: $0.name)), path) }) {
+                // `.exists`, as the entity store answered before this check existed, and a
+                // ContainerizationError keeps its code across XPC (a VolumeError does not).
+                throw ContainerizationError(
+                    .exists,
+                    message: "volume '\(name)' already exists as '\(owner.name)': on this file system the two names are the same")
+            }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned volume directory", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
+            throw VolumeError.storageError(
+                "cannot create volume '\(name)': \(path.string) already exists, holds files and belongs to no volume. To keep the files, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the volume again"
+            )
+        } catch {
+            throw VolumeError.storageError("cannot create the directory of volume '\(name)': \(error)")
+        }
     }
 
     static func parseJournalConfig(_ value: String) throws -> EXT4.JournalConfig {
@@ -286,12 +307,14 @@ public actor VolumesService {
         return EXT4.JournalConfig(size: size, defaultMode: mode)
     }
 
-    private func createVolumeImage(for name: String, sizeInBytes: UInt64 = VolumeStorage.defaultVolumeSizeBytes, journal: EXT4.JournalConfig? = nil) throws {
-        let blockPath = blockPath(for: name)
+    /// Formats the image of a new volume in its reserved directory. The image file is created
+    /// exclusively first: the formatter truncates a file that exists, so it must only ever see
+    /// the empty file that this call made.
+    private func createVolumeImage(in directory: ReservedDirectory, sizeInBytes: UInt64, journal: EXT4.JournalConfig?) throws {
+        let image = try directory.createFile(Self.blockFile)
 
-        // Use the containerization library's EXT4 formatter
         let formatter = try EXT4.Formatter(
-            FilePath(blockPath),
+            image,
             blockSize: 4096,
             minDiskSize: sizeInBytes,
             journal: journal
@@ -325,8 +348,6 @@ public actor VolumesService {
             throw VolumeError.volumeAlreadyExists(name)
         }
 
-        try createVolumeDirectory(for: name)
-
         // Parse size from driver options (default 512GB)
         let sizeInBytes: UInt64
         if let sizeString = driverOpts["size"] {
@@ -337,8 +358,8 @@ public actor VolumesService {
 
         let journalConfig = try driverOpts["journal"].map { try Self.parseJournalConfig($0) }
 
-        try createVolumeImage(for: name, sizeInBytes: sizeInBytes, journal: journalConfig)
-
+        // Every option is valid: from here on, the create writes only inside the directory it reserves.
+        let directory = try reserveVolumeDirectory(for: name, existing: existingVolumes)
         let volume = VolumeConfiguration(
             name: name,
             driver: driver,
@@ -348,9 +369,25 @@ public actor VolumesService {
             options: driverOpts,
             sizeInBytes: sizeInBytes
         )
+        do {
+            try createVolumeImage(in: directory, sizeInBytes: sizeInBytes, journal: journalConfig)
+            try await store.create(volume)
+        } catch {
+            do {
+                try directory.release()
+            } catch let cleanupError {
+                log.error(
+                    "failed to remove the directory of a volume whose create failed",
+                    metadata: ["name": "\(name)", "error": "\(cleanupError)"])
+            }
+            throw error
+        }
 
-        try await store.create(volume)
-
+        do {
+            try directory.publish()
+        } catch {
+            log.error("failed to remove the reservation marker of a new volume", metadata: ["name": "\(name)", "error": "\(error)"])
+        }
         log.info(
             "created volume",
             metadata: [
