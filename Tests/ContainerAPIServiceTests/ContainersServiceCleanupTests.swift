@@ -19,6 +19,7 @@ import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
 import ContainerTestSupport
+import ContainerizationError
 import Foundation
 import Logging
 import Testing
@@ -29,7 +30,7 @@ struct ContainersServiceCleanupTests {
         case missing
     }
 
-    private enum Removal {
+    enum Removal {
         case auto
         case manual
     }
@@ -153,17 +154,51 @@ struct ContainersServiceCleanupTests {
         }
     }
 
-    @Test
-    func bootDropsContainerWithMissingRuntime() async throws {
+    @Test(arguments: [Removal.auto, Removal.manual])
+    func bootKeepsContainerWithMissingRuntime(removal: Removal) async throws {
         try await TemporaryStorage.withTempDir { root in
             let appRoot = URL(fileURLWithPath: root.string)
-            let bundle = try Self.createBundle(appRoot: appRoot, id: "orphan-\(UUID())", removal: .auto)
+            let id = "orphan-\(UUID())"
+            let bundle = try Self.createBundle(appRoot: appRoot, id: id, removal: removal)
+            try Data("data the container wrote".utf8).write(to: bundle.appendingPathComponent("rootfs.ext4"))
+            let before = try Self.contents(of: bundle)
 
             let service = try await makeService(appRoot: appRoot, runtime: .missing)
 
             #expect(Self.cleanupArgs(appRoot: appRoot) == nil)
-            #expect(!FileManager.default.fileExists(atPath: bundle.path))
+            #expect(try Self.contents(of: bundle) == before)
+            #expect(try await service.list().map(\.id) == [id])
+
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await service.bootstrap(id: id, stdio: [nil, nil, nil], dynamicEnv: [:])
+            }
+            #expect(error?.code == .notFound)
+            #expect(try Self.contents(of: bundle) == before)
+        }
+    }
+
+    @Test
+    func bootKeepsUnreadableBundle() async throws {
+        try await TemporaryStorage.withTempDir { root in
+            let appRoot = URL(fileURLWithPath: root.string)
+            let bundle = appRoot.appendingPathComponent("containers").appendingPathComponent("unreadable-\(UUID())")
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+            try Data("{ not json".utf8).write(to: bundle.appendingPathComponent("config.json"))
+            try Data("data the container wrote".utf8).write(to: bundle.appendingPathComponent("rootfs.ext4"))
+            let before = try Self.contents(of: bundle)
+
+            let service = try await makeService(appRoot: appRoot, runtime: .installed)
+
+            #expect(try Self.contents(of: bundle) == before)
             #expect(try await service.list().isEmpty)
         }
+    }
+
+    private static func contents(of directory: URL) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {
+            result[name] = try Data(contentsOf: directory.appendingPathComponent(name))
+        }
+        return result
     }
 }
