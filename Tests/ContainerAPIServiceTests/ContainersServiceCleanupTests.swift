@@ -214,6 +214,33 @@ struct ContainersServiceCleanupTests {
         }
     }
 
+    @Test(.enabled(if: tempDirIsCaseInsensitive(), "needs a case-insensitive temporary directory"))
+    func bootLoadsBundleWhoseNameDiffersOnlyInCase() async throws {
+        try await TemporaryStorage.withTempDir { root in
+            let appRoot = URL(fileURLWithPath: root.string)
+            let id = "cased-\(UUID())"
+            let stored = try Self.createBundle(appRoot: appRoot, id: id, removal: .manual)
+            let upper = stored.deletingLastPathComponent().appendingPathComponent(id.uppercased())
+            let between = stored.deletingLastPathComponent().appendingPathComponent("between-\(UUID())")
+            try FileManager.default.moveItem(at: stored, to: between)
+            try FileManager.default.moveItem(at: between, to: upper)
+
+            let service = try await makeService(appRoot: appRoot, runtime: .installed)
+
+            #expect(try await service.list().map(\.id) == [id])
+        }
+    }
+
+    private static func tempDirIsCaseInsensitive() -> Bool {
+        let base = FileManager.default.temporaryDirectory
+        let probe = base.appendingPathComponent("CaseProbe-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: probe.path, contents: nil) else {
+            return false
+        }
+        defer { try? FileManager.default.removeItem(at: probe) }
+        return FileManager.default.fileExists(atPath: base.appendingPathComponent(probe.lastPathComponent.lowercased()).path)
+    }
+
     private static func contents(of directory: URL) throws -> [String: Data] {
         var result: [String: Data] = [:]
         for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {

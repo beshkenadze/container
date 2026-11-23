@@ -103,9 +103,10 @@ public actor ContainersService {
         for dir in directories {
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
-                // Every operation finds a container's directory by its ID: a directory under
-                // another name is kept, and not loaded.
-                guard dir.lastPathComponent == config.id else {
+                // Every operation finds a container's directory by its ID: a directory that the
+                // path of its ID does not lead to (as the file system resolves names) is kept, and
+                // not loaded.
+                guard Self.isSameEntry(root.appendingPathComponent(config.id), dir) else {
                     throw ContainerizationError(
                         .invalidState,
                         message: "container directory \(dir.lastPathComponent) holds the configuration of container \(config.id)"
@@ -174,6 +175,16 @@ public actor ContainersService {
             }
         }
         return results
+    }
+
+    /// Whether `a` and `b` lead to the same file system entry (same device and inode).
+    private static func isSameEntry(_ a: URL, _ b: URL) -> Bool {
+        var sa = stat()
+        var sb = stat()
+        guard stat(a.path, &sa) == 0, stat(b.path, &sb) == 0 else {
+            return false
+        }
+        return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino
     }
 
     /// List containers matching the given filters.
