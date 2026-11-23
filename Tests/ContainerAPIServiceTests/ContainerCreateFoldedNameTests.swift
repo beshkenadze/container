@@ -176,8 +176,9 @@ struct ContainerCreateFoldedNameTests {
             }
             #expect(error?.code == .exists)
             // The suggested place is outside the directory that the server scans at startup.
-            #expect(error?.message.contains("mv '\(directory.path)' ~/'cheld.saved'") == true)
-            #expect(error?.message.contains("\(directory.path).saved") == false)
+            #expect(error?.message.contains("move the directory out of \(directory.deletingLastPathComponent().path)") == true)
+            // A shell command in the message breaks on quotes in the path and on long names.
+            #expect(error?.message.contains("`mv ") == false)
             #expect(try Self.contents(of: directory) == before)
             #expect(try await service.list().isEmpty)
         }

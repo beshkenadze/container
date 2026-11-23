@@ -403,7 +403,7 @@ public actor ContainersService {
             throw ContainerizationError(
                 .exists,
                 message:
-                    "container '\(id)' cannot be created: \(path.string) holds files and belongs to no container. To keep the files, move the directory out of \(path.removingLastComponent().string), for example `mv '\(path.string)' ~/'\(id).saved'`, then create the container again"
+                    "container '\(id)' cannot be created: \(path.string) holds files and belongs to no container. To keep the files, move the directory out of \(path.removingLastComponent().string), then create the container again"
             )
         }
     }

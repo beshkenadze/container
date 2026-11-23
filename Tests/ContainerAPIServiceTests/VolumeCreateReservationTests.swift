@@ -84,8 +84,9 @@ struct VolumeCreateReservationTests {
             let error = await #expect(throws: VolumeError.self) {
                 _ = try await service.create(name: "left", driverOpts: small)
             }
-            #expect(error?.localizedDescription.contains("mv '\(directory.string)' ~/'left.saved'") == true)
-            #expect(error?.localizedDescription.contains("\(directory.string).saved") == false)
+            #expect(error?.localizedDescription.contains("move the directory out of \(directory.removingLastComponent().string)") == true)
+            // A shell command in the message breaks on quotes in the path and on long names.
+            #expect(error?.localizedDescription.contains("`mv ") == false)
 
             #expect(try state(of: image) == before)
             #expect(try await service.list().isEmpty)

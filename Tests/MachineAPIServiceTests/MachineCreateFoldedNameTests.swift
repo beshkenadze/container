@@ -138,8 +138,9 @@ struct MachineCreateFoldedNameTests {
             }
             #expect(error?.code == .exists)
             // The suggested place is outside the directory that the server scans at startup.
-            #expect(error?.message.contains("mv '\(held.string)' ~/'mheld.saved'") == true)
-            #expect(error?.message.contains("\(held.string).saved") == false)
+            #expect(error?.message.contains("move the directory out of \(held.removingLastComponent().string)") == true)
+            // A shell command in the message breaks on quotes in the path and on long names.
+            #expect(error?.message.contains("`mv ") == false)
             #expect(try contents(of: url) == before)
         }
     }

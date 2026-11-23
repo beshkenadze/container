@@ -279,7 +279,7 @@ public actor VolumesService {
                 return try ReservedDirectory.reserve(path)
             }
             throw VolumeError.storageError(
-                "cannot create volume '\(name)': \(path.string) holds files and belongs to no volume. To keep the files, move the directory out of \(path.removingLastComponent().string), for example `mv '\(path.string)' ~/'\(name).saved'`, then create the volume again"
+                "cannot create volume '\(name)': \(path.string) holds files and belongs to no volume. To keep the files, move the directory out of \(path.removingLastComponent().string), then create the volume again"
             )
         } catch {
             throw VolumeError.storageError("cannot create the directory of volume '\(name)': \(error)")
