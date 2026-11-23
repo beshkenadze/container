@@ -86,6 +86,12 @@ public actor MachinesService {
                 continue
             }
             let dir = root.appending(component)
+            // A bundle directory that an interrupted create left with nothing in it (or only its
+            // reservation marker) holds no data: remove it, so that its name can be used again.
+            if ReservedDirectory.reclaimIfAbandoned(dir) {
+                log.info("reclaimed an abandoned machine bundle", metadata: ["path": "\(dir.string)"])
+                continue
+            }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir.string, isDirectory: &isDirectory), isDirectory.boolValue else {
                 continue
@@ -187,12 +193,24 @@ public actor MachinesService {
             }
 
             let path = try self.bundlePath(id: configuration.id)
-            let bundle = try MachineBundle.create(
-                path: path,
-                machineConfiguration: configuration,
-                resourceRoot: self.resourceRoot,
-                bootConfig: bootConfig,
-            )
+            // From here on the create writes only inside the directory that it reserves.
+            let directory = try await self.reserveBundleDirectory(id: configuration.id, path: path)
+            let bundle: MachineBundle
+            do {
+                bundle = try MachineBundle.create(
+                    path: path,
+                    machineConfiguration: configuration,
+                    resourceRoot: self.resourceRoot,
+                    bootConfig: bootConfig,
+                )
+            } catch {
+                do {
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error("failed to remove the bundle of a container machine whose create failed: \(cleanupError)")
+                }
+                throw error
+            }
 
             do {
                 let machineImage = ClientImage(description: configuration.image)
@@ -213,15 +231,47 @@ public actor MachinesService {
                 if await self.default == nil {
                     try await self._setDefault(id: configuration.id)
                 }
-            } catch {
                 do {
-                    try bundle.delete()
+                    try directory.publish()
                 } catch {
-                    self.log.error("failed to delete bundle for container machine \(configuration.id)")
+                    self.log.error("failed to remove the reservation marker of container machine \(configuration.id): \(error)")
                 }
-
+            } catch {
+                // The same token-checked removal as above: only this create's own reservation.
+                do {
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error("failed to remove the bundle of a container machine whose create failed: \(cleanupError)")
+                }
                 throw error
             }
+        }
+    }
+
+    /// Reserves the bundle directory of a new machine. The file system decides whether `id`
+    /// equals the name of an existing bundle: on a case-insensitive volume `Dev` and `dev` are one
+    /// directory, which holds the other machine's configuration and root file system.
+    private func reserveBundleDirectory(id: String, path: FilePath) throws -> ReservedDirectory {
+        do {
+            return try ReservedDirectory.reserve(path)
+        } catch is ReservedDirectory.Exists {
+            let owner = self.machines.keys.first { other in
+                (try? self.bundlePath(id: other)).map { ReservedDirectory.sameEntry($0, path) } ?? false
+            }
+            if let owner {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "container machine '\(id)' cannot be created: on this file system its name is the same as that of the existing machine '\(owner)'")
+            }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned machine bundle", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
+            throw ContainerizationError(
+                .invalidState,
+                message:
+                    "container machine '\(id)' cannot be created: \(path.string) holds files and belongs to no machine. To keep the files, move the directory out of \(path.removingLastComponent().string), then create the machine again"
+            )
         }
     }
 
