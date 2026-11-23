@@ -312,16 +312,19 @@ public actor ContainersService {
             let path = self.containerRoot.appendingPathComponent(configuration.id)
             let systemPlatform = kernel.platform
 
-            // Fetch init image (custom or default)
-            self.log.debug(
-                "ContainersService: get init block",
-                metadata: [
-                    "id": "\(configuration.id)"
-                ]
-            )
-            let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
+            // From here on the create writes only inside the directory that it reserves.
+            let directory = try await self.reserveContainerDirectory(id: configuration.id)
 
             do {
+                // Fetch init image (custom or default)
+                self.log.debug(
+                    "ContainersService: get init block",
+                    metadata: [
+                        "id": "\(configuration.id)"
+                    ]
+                )
+                let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
+
                 self.log.debug(
                     "create snapshot",
                     metadata: [
@@ -358,8 +361,50 @@ public actor ContainersService {
                 )
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
             } catch {
+                do {
+                    try directory.release()
+                } catch let cleanupError {
+                    self.log.error(
+                        "failed to remove the directory of a container whose create failed",
+                        metadata: ["id": "\(configuration.id)", "error": "\(cleanupError)"])
+                }
                 throw error
             }
+            do {
+                try directory.publish()
+            } catch {
+                self.log.error(
+                    "failed to remove the reservation marker of a new container",
+                    metadata: ["id": "\(configuration.id)", "error": "\(error)"])
+            }
+        }
+    }
+
+    /// Reserves the directory of a new container. The file system decides whether `id` equals the
+    /// name of an existing directory: on a case-insensitive volume `Web` and `web` are one
+    /// directory, which holds the other container's configuration and root file system.
+    private func reserveContainerDirectory(id: String) throws -> ReservedDirectory {
+        let path = FilePath(self.containerRoot.appendingPathComponent(id).path)
+        do {
+            return try ReservedDirectory.reserve(path)
+        } catch is ReservedDirectory.Exists {
+            let owner = self.containers.keys.first {
+                ReservedDirectory.sameEntry(FilePath(self.containerRoot.appendingPathComponent($0).path), path)
+            }
+            if let owner {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container '\(id)' cannot be created: on this file system its name is the same as that of the existing container '\(owner)'")
+            }
+            if ReservedDirectory.reclaimIfAbandoned(path) {
+                log.info("reclaimed an abandoned container directory", metadata: ["path": "\(path.string)"])
+                return try ReservedDirectory.reserve(path)
+            }
+            throw ContainerizationError(
+                .exists,
+                message:
+                    "container '\(id)' cannot be created: \(path.string) already exists, holds files and belongs to no container. To keep the files, move the directory away, for example `mv '\(path.string)' '\(path.string).saved'`, then create the container again"
+            )
         }
     }
 
