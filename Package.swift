@@ -315,6 +315,18 @@ let package = Package(
             path: "Sources/Services/ContainerAPIService/Server"
         ),
         .testTarget(
+            name: "MachineAPIServiceTests",
+            dependencies: [
+                .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
+                "ContainerPersistence",
+                "ContainerResource",
+                "ContainerTestSupport",
+                "MachineAPIClient",
+                "MachineAPIService",
+            ]
+        ),
+        .testTarget(
             name: "ContainerAPIServiceTests",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
