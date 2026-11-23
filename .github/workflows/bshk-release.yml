@@ -9,11 +9,44 @@ permissions:
   contents: write
 
 jobs:
+  # The same build as the buildClusterShim job in common.yml.
+  buildClusterShim:
+    runs-on: ubuntu-24.04
+    container: swift:6.3.0-noble
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: apt-get update && apt-get install -y make
+
+      - name: Install the Static Linux SDK
+        run: make -C cluster-shim linux-sdk
+
+      - name: Build cluster-shim (static musl, aarch64)
+        run: make -C cluster-shim build-native ARCH=aarch64
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cluster-shim
+          path: cluster-shim/bin/cluster-shim
+          if-no-files-found: error
+
   release:
+    needs: buildClusterShim
     runs-on: macos-26
     timeout-minutes: 120
+    env:
+      CLUSTER_SHIM_BINARY: cluster-shim/bin/cluster-shim
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cluster-shim
+          path: cluster-shim/bin
 
       - name: Import the Developer ID
         env:
@@ -58,6 +91,9 @@ jobs:
           echo "PKG=container-${GITHUB_REF_NAME}-installer-signed.pkg" >> "$GITHUB_ENV"
           make container BUILD_CONFIGURATION=release RELEASE_VERSION="$version" \
             CODESIGN_OPTS="--force --sign $APP_IDENTITY --keychain $KEYCHAIN --timestamp --options runtime"
+
+      - name: Check that the package has cluster-shim
+        run: scripts/check-release-package.sh bin/release/container-installer-unsigned.pkg
 
       - name: Sign and notarize the installer
         env:
