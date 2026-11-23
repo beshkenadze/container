@@ -167,7 +167,9 @@ struct ContainersServiceCleanupTests {
 
             #expect(Self.cleanupArgs(appRoot: appRoot) == nil)
             #expect(try Self.contents(of: bundle) == before)
-            #expect(try await service.list().map(\.id) == [id])
+            let listed = try await service.list()
+            #expect(listed.map(\.id) == [id])
+            #expect(listed.first?.status == .stopped)
 
             let error = await #expect(throws: ContainerizationError.self) {
                 try await service.bootstrap(id: id, stdio: [nil, nil, nil], dynamicEnv: [:])
