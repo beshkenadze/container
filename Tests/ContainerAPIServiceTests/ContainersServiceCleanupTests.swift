@@ -196,6 +196,24 @@ struct ContainersServiceCleanupTests {
         }
     }
 
+    @Test
+    func bootKeepsBundleUnderAnotherName() async throws {
+        try await TemporaryStorage.withTempDir { root in
+            let appRoot = URL(fileURLWithPath: root.string)
+            let id = "renamed-\(UUID())"
+            let stored = try Self.createBundle(appRoot: appRoot, id: id, removal: .manual)
+            let copy = stored.deletingLastPathComponent().appendingPathComponent("\(id)-copy")
+            try FileManager.default.moveItem(at: stored, to: copy)
+            try Data("data the container wrote".utf8).write(to: copy.appendingPathComponent("rootfs.ext4"))
+            let before = try Self.contents(of: copy)
+
+            let service = try await makeService(appRoot: appRoot, runtime: .installed)
+
+            #expect(try await service.list().isEmpty)
+            #expect(try Self.contents(of: copy) == before)
+        }
+    }
+
     private static func contents(of directory: URL) throws -> [String: Data] {
         var result: [String: Data] = [:]
         for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) {

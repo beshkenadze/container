@@ -103,6 +103,14 @@ public actor ContainersService {
         for dir in directories {
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
+                // Every operation finds a container's directory by its ID: a directory under
+                // another name is kept, and not loaded.
+                guard dir.lastPathComponent == config.id else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container directory \(dir.lastPathComponent) holds the configuration of container \(config.id)"
+                    )
+                }
                 let plugin = runtimePlugins.first(where: { $0.name == config.runtimeHandler })
 
                 // A container whose runtime plugin is not installed now keeps its bundle: the
