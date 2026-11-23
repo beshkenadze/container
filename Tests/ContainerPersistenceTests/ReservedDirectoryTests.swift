@@ -98,9 +98,12 @@ extension ReservedDirectoryTests {
                 withDestinationPath: reserved.path.appending(ReservedDirectory.markerName).string)
 
             for name in ["text", "empty", "link"] {
+                let marker = root.appending(name).appending(ReservedDirectory.markerName).string
+                let before = try fm.attributesOfItem(atPath: marker)[.systemFileNumber] as? NSNumber
                 #expect(!ReservedDirectory.reclaimIfAbandoned(root.appending(name)), "\(name)")
-                #expect(fm.fileExists(atPath: root.appending(name).string), "\(name)")
+                #expect(try fm.attributesOfItem(atPath: marker)[.systemFileNumber] as? NSNumber == before, "\(name)")
             }
+            #expect(try String(contentsOfFile: root.appending("text").appending(ReservedDirectory.markerName).string, encoding: .utf8) == "notes of the user")
             #expect(ReservedDirectory.reclaimIfAbandoned(reserved.path))
         }
     }
