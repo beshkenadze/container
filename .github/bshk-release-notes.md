@@ -1,17 +1,16 @@
-Apple container 1.7.1 with fixes for data loss from names that differ only in case, and for `container image push`.
+Apple container 1.7.1 with commands to start and stop Kubernetes clusters.
 
-Names that differ only in case, on a case-insensitive file system (the macOS default):
+Cluster start and stop:
 
-- `container volume create`, `container create` and `container machine create` with a name that differs from an existing one only in case (`Web` beside `web`) wrote into the existing entity's directory. A volume create formatted the existing volume's image; a later delete of the second container removed the first container's root file system. Each create now reserves its directory before it writes, and refuses such a name: "… on this file system its name is the same as that of the existing …".
-- A directory left with files by an interrupted create is refused with its path and how to keep its files (`mv`). An empty directory, or one with only the reservation marker, is reclaimed.
-- A container directory that fails to load is kept and logged, not deleted.
-- A directory that two names already share is kept. Start and delete are refused only when the container's ID does not lead to the directory. The state that 1.7.1-bshk.1 leaves when `web` was created over a started `Web` loads as `Web`, and its delete removes the other name's runtime configuration first.
-- A delete that waited while its container was deleted and created again under the same name no longer removes the new container.
-- `container run -v <name>:…` reports the conflict when the volume name folds onto another volume.
+- Use `container cluster stop` to stop a cluster. Use `container cluster start` to start it again.
+- These commands come from an open upstream pull request. Their behavior can change before upstream merges it.
+- You cannot restart a multi-node cluster that you created before this release.
+- If a start is interrupted, the cluster can show `running` while the pod network does not work. To recover, run `container cluster stop`, then `container cluster start`.
+- Each stop ends with a forced kill. The runtime then unmounts the data disk.
+- This release fixes a bug in cluster exec that closed the same file descriptors twice in clusters with two or more workers.
 
-`container image push`:
+Shared image store:
 
-- containerization 0.54.0 and beshkenadze/containerization#1, #2
-- async-http-client and beshkenadze/async-http-client#1, #2, #3, #4
+- The installer now includes `cluster-shim`, so `container cluster create --shared-image-store` works.
 
 `container --version` shows `1.7.1`.
